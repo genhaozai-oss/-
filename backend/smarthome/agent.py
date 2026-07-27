@@ -224,7 +224,7 @@ class SmartHomeAgent:
             if final
             else self._fallback_reply(outputs)
         )
-        if not reply:
+        if not reply or not self._reply_matches_capabilities(reply):
             reply = self._fallback_reply(outputs)
         result = self._build_result(outputs, reply)
         self._remember(session_id, message, result["reply"])
@@ -243,7 +243,9 @@ class SmartHomeAgent:
             "需要查询实时状态或执行操作时必须调用工具，绝不能假装已经操作。"
             "只能操作工具列出的已登记设备；名称不明确时应请用户说清楚。"
             "风扇属于送风降温设备；用户说热、想凉快时应开启已登记的风扇，"
-            "加湿器只调节湿度，不能替代风扇降温。"
+            "加湿器和抽湿器只调节湿度，灯光也不能降温。"
+            "当前设备都只有打开和关闭能力，不支持风速、温度或亮度档位调节，"
+            "不要声称或建议执行未登记的能力。"
             "禁止建议裸线接水或直接接触220V市电，高风险设备只做安全模拟。"
             "结合最近对话理解“它”“刚才那个”等指代，回复通常不超过三句话。"
             f"\n当前时间：{now}"
@@ -453,6 +455,16 @@ class SmartHomeAgent:
     def _fallback_reply(outputs):
         messages = [output["message"] for output in outputs if output.get("message")]
         return " ".join(messages) or "操作已经处理，但云端暂时没有生成回复。"
+
+    @staticmethod
+    def _reply_matches_capabilities(reply):
+        if any(term in reply for term in ("风速", "亮度", "温度档位")):
+            return False
+        if "降温" in reply and any(
+            device in reply for device in ("加湿器", "抽湿器", "灯光")
+        ):
+            return False
+        return True
 
     def _build_result(self, outputs, reply):
         intents = [output.get("intent") for output in outputs if output.get("intent")]

@@ -134,7 +134,10 @@ class FakeRetryToolLlm:
                     }
                 ],
             }
-        return {"role": "assistant", "content": "好的，已打开客厅风扇。"}
+        return {
+            "role": "assistant",
+            "content": "已打开客厅风扇，需要时还可以调高风速。",
+        }
 
 
 def test_unknown_text_can_use_validated_llm_plan(app, client):
@@ -238,6 +241,7 @@ def test_agent_retries_with_tool_when_action_request_returns_only_text(app, clie
     assert fake.calls == 3
     assert result["actions"][0]["device_id"] == "fan-1"
     assert result["actions"][0]["state"] == "on"
+    assert result["reply"] == "已打开客厅风扇。"
 
 
 def test_agent_isolates_conversation_sessions(app, client):
