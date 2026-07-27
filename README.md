@@ -35,6 +35,30 @@ cd backend
 python -m pytest
 ```
 
+## 启用 ESP32-S3 通信
+
+电脑需先安装并启动 Mosquitto MQTT Broker。边缘服务通过以下环境变量启用 MQTT：
+
+```powershell
+$env:SMARTHOME_MQTT_ENABLED="1"
+$env:SMARTHOME_MQTT_BROKER="mqtt://127.0.0.1:1883"
+python run.py
+```
+
+固件采用 ESP-IDF 5.4 或更高版本：
+
+```powershell
+cd firmware
+idf.py set-target esp32s3
+idf.py menuconfig
+idf.py build
+idf.py -p COM端口 flash monitor
+```
+
+在 `menuconfig → 家庭智能助手配置` 中填写 Wi-Fi、运行边缘服务的电脑局域网
+IP，以及实际使用的 GPIO。Wi-Fi 密码只保存在本机生成的 `sdkconfig` 中，该文件
+已被 Git 忽略，不会上传到仓库。
+
 ## 推荐硬件与预算
 
 价格按常见学生购买渠道估算，购买前应再次核对。核心演示预计 300～600 元，
@@ -76,4 +100,3 @@ ESP32-S3 ── 温湿度、低压风扇、灯光、窗帘模型
 ```
 
 项目进度和下一步工作记录在 [PROJECT_STATUS.md](PROJECT_STATUS.md)。
-

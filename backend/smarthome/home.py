@@ -1,4 +1,5 @@
 from . import database
+from .devices import set_device_state
 
 
 TYPE_LABELS = {
@@ -16,7 +17,7 @@ def set_type_state(device_type, state):
             continue
         if device["state"] == state:
             continue
-        updated = database.update_device(device["id"], state=state)
+        updated = set_device_state(device["id"], state)
         actions.append(
             {
                 "device_id": device["id"],
@@ -84,4 +85,3 @@ def run_home_arrival():
         "actions": actions,
         "environment": environment,
     }
-

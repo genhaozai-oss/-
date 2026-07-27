@@ -3,6 +3,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from . import database
+from .devices import set_device_state
 from .home import run_home_arrival
 
 
@@ -162,7 +163,7 @@ def control_device(message):
         }
 
     state = "on" if verb in {"打开", "开启", "启动"} else "off"
-    device = database.update_device(matches[0]["id"], state=state)
+    device = set_device_state(matches[0]["id"], state)
     action = {
         "device_id": device["id"],
         "device_name": device["name"],

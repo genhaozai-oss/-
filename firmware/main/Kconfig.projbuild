@@ -1,0 +1,38 @@
+menu "家庭智能助手配置"
+
+config SMARTHOME_WIFI_SSID
+    string "Wi-Fi 名称"
+    default ""
+
+config SMARTHOME_WIFI_PASSWORD
+    string "Wi-Fi 密码"
+    default ""
+
+config SMARTHOME_MQTT_URI
+    string "MQTT Broker 地址"
+    default "mqtt://192.168.1.100:1883"
+    help
+        填写运行边缘服务的电脑局域网 IP，不要填写 127.0.0.1。
+
+config SMARTHOME_FAN_GPIO
+    int "低压风扇 MOSFET 控制 GPIO"
+    range 0 48
+    default 4
+
+config SMARTHOME_I2C_SDA_GPIO
+    int "AHT20 SDA GPIO"
+    range 0 48
+    default 8
+
+config SMARTHOME_I2C_SCL_GPIO
+    int "AHT20 SCL GPIO"
+    range 0 48
+    default 9
+
+config SMARTHOME_SENSOR_INTERVAL_SECONDS
+    int "温湿度上报间隔（秒）"
+    range 2 3600
+    default 10
+
+endmenu
+

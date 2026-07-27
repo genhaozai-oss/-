@@ -133,7 +133,15 @@ def find_devices(query):
     ]
 
 
-def update_device(device_id, *, name=None, room=None, state=None):
+def update_device(
+    device_id,
+    *,
+    name=None,
+    room=None,
+    state=None,
+    online=None,
+    is_virtual=None,
+):
     device = get_device(device_id)
     if not device:
         return None
@@ -142,15 +150,27 @@ def update_device(device_id, *, name=None, room=None, state=None):
         "name": name if name is not None else device["name"],
         "room": room if room is not None else device["room"],
         "state": state if state is not None else device["state"],
+        "online": int(online) if online is not None else device["online"],
+        "is_virtual": (
+            int(is_virtual) if is_virtual is not None else device["is_virtual"]
+        ),
     }
     db = get_db()
     db.execute(
         """
         UPDATE devices
-        SET name = ?, room = ?, state = ?, updated_at = ?
+        SET name = ?, room = ?, state = ?, online = ?, is_virtual = ?, updated_at = ?
         WHERE id = ?
         """,
-        (values["name"], values["room"], values["state"], now_iso(), device_id),
+        (
+            values["name"],
+            values["room"],
+            values["state"],
+            values["online"],
+            values["is_virtual"],
+            now_iso(),
+            device_id,
+        ),
     )
     db.commit()
     return get_device(device_id)

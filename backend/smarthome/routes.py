@@ -3,6 +3,7 @@ import sqlite3
 from flask import Blueprint, jsonify, request, send_from_directory
 
 from . import database
+from .devices import set_device_state
 from .home import run_comfort_rules
 from .intent import handle_message
 from .weather import get_weather
@@ -100,8 +101,9 @@ def update_device(device_id):
             device_id,
             name=str(name).strip() if name is not None else None,
             room=str(room).strip() if room is not None else None,
-            state=state,
         )
+        if device and state is not None:
+            device = set_device_state(device_id, state)
     except sqlite3.IntegrityError:
         return error("设备名称已经存在。", 409)
     if not device:
@@ -147,4 +149,3 @@ def delete_alarm(alarm_id):
 @api.get("/api/events")
 def events():
     return jsonify({"events": database.list_events(30)})
-
