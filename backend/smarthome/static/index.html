@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>栖居 AI · 家庭智能管理助手</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="ambient ambient-one"></div>
+  <div class="ambient ambient-two"></div>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">HOME EDGE INTELLIGENCE</p>
+        <h1>栖居 <span>AI</span></h1>
+      </div>
+      <div class="system-status">
+        <i></i>
+        <span>边缘服务在线</span>
+      </div>
+    </header>
+
+    <section class="hero">
+      <div>
+        <p id="greeting">晚上好</p>
+        <h2>家，正在等你回来。</h2>
+        <p class="hero-copy">设备控制留在本地，复杂理解按需使用云端。</p>
+      </div>
+      <button class="primary-action" id="homeSceneButton">
+        <span>⌂</span>
+        准备回家
+      </button>
+    </section>
+
+    <section class="dashboard-grid">
+      <article class="card climate-card">
+        <div class="card-heading">
+          <div>
+            <p class="card-kicker">室内环境</p>
+            <h3>舒适度监测</h3>
+          </div>
+          <span class="soft-badge">实时</span>
+        </div>
+        <div class="climate-values">
+          <div>
+            <span class="climate-icon temperature-icon">°</span>
+            <strong id="temperature">--</strong>
+            <small>℃</small>
+            <p>温度</p>
+          </div>
+          <div>
+            <span class="climate-icon humidity-icon">◌</span>
+            <strong id="humidity">--</strong>
+            <small>%</small>
+            <p>湿度</p>
+          </div>
+        </div>
+        <div class="simulator">
+          <label>
+            模拟温度
+            <input id="temperatureInput" type="range" min="10" max="40" step="0.5">
+          </label>
+          <label>
+            模拟湿度
+            <input id="humidityInput" type="range" min="10" max="95" step="1">
+          </label>
+          <button id="updateEnvironmentButton">更新环境</button>
+        </div>
+      </article>
+
+      <article class="card weather-card">
+        <div class="card-heading">
+          <div>
+            <p class="card-kicker">室外天气</p>
+            <h3 id="locationTitle">尚未配置位置</h3>
+          </div>
+          <span class="weather-symbol">☁</span>
+        </div>
+        <p id="weatherSummary" class="weather-summary">填写经纬度后获取实时天气。</p>
+        <form id="locationForm" class="location-form">
+          <input id="locationName" placeholder="城市名，如广州" aria-label="城市名">
+          <input id="latitude" type="number" step="any" placeholder="纬度" aria-label="纬度" required>
+          <input id="longitude" type="number" step="any" placeholder="经度" aria-label="经度" required>
+          <button>保存位置</button>
+        </form>
+      </article>
+    </section>
+
+    <section class="content-grid">
+      <article class="card devices-card">
+        <div class="card-heading">
+          <div>
+            <p class="card-kicker">设备空间</p>
+            <h3>我的设备</h3>
+          </div>
+          <span class="hint">点击设备后可对它说“这个设备叫做……”</span>
+        </div>
+        <div id="deviceList" class="device-list"></div>
+      </article>
+
+      <article class="card assistant-card">
+        <div class="assistant-heading">
+          <div class="assistant-avatar">栖</div>
+          <div>
+            <h3>家庭助手</h3>
+            <p id="selectedDeviceText">当前未选择设备</p>
+          </div>
+        </div>
+        <div id="messages" class="messages">
+          <div class="message assistant-message">
+            我在呢。你可以说“打开客厅风扇”或“我要下班回家了”。
+          </div>
+        </div>
+        <form id="chatForm" class="chat-form">
+          <input id="chatInput" autocomplete="off" placeholder="告诉我你想做什么…" required>
+          <button aria-label="发送">➜</button>
+        </form>
+        <div class="quick-commands">
+          <button data-message="室内温湿度怎么样">查询环境</button>
+          <button data-message="明天早上七点设置闹钟">设置闹钟</button>
+          <button data-message="今天天气怎么样">查询天气</button>
+        </div>
+      </article>
+    </section>
+
+    <section class="card alarms-card">
+      <div class="card-heading">
+        <div>
+          <p class="card-kicker">时间助手</p>
+          <h3>待执行闹钟</h3>
+        </div>
+      </div>
+      <div id="alarmList" class="alarm-list"></div>
+    </section>
+  </main>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
+
