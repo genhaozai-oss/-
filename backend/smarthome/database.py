@@ -45,6 +45,17 @@ CREATE TABLE IF NOT EXISTS events (
     payload TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_session
+ON conversation_messages(session_id, id);
 """
 
 
@@ -305,3 +316,41 @@ def list_events(limit=20):
     for event in events:
         event["payload"] = json.loads(event["payload"])
     return events
+
+
+def add_conversation_message(session_id, role, content, keep=12):
+    db = get_db()
+    db.execute(
+        """
+        INSERT INTO conversation_messages (session_id, role, content, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (session_id, role, content, now_iso()),
+    )
+    db.execute(
+        """
+        DELETE FROM conversation_messages
+        WHERE session_id = ? AND id NOT IN (
+            SELECT id FROM conversation_messages
+            WHERE session_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+        )
+        """,
+        (session_id, session_id, keep),
+    )
+    db.commit()
+
+
+def list_conversation_messages(session_id, limit=12):
+    rows = get_db().execute(
+        """
+        SELECT role, content
+        FROM conversation_messages
+        WHERE session_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (session_id, limit),
+    ).fetchall()
+    return [dict(row) for row in reversed(rows)]

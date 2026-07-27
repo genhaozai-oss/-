@@ -4,6 +4,7 @@ from pathlib import Path
 from flask import Flask
 
 from . import database
+from .agent import SmartHomeAgent
 from .llm import LlmInterpreter
 from .mqtt_bridge import MqttBridge
 from .routes import api
@@ -38,7 +39,9 @@ def create_app(test_config=None):
     app.register_blueprint(api)
     mqtt_bridge = MqttBridge(app)
     app.extensions["mqtt_bridge"] = mqtt_bridge
-    app.extensions["llm_interpreter"] = LlmInterpreter(app)
+    llm_interpreter = LlmInterpreter(app)
+    app.extensions["llm_interpreter"] = llm_interpreter
+    app.extensions["assistant_agent"] = SmartHomeAgent(llm_interpreter)
     app.extensions["speech_recognizer"] = SpeechRecognizer(app)
 
     with app.app_context():

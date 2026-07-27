@@ -1,3 +1,10 @@
+const storedSessionId = window.localStorage.getItem("smarthome_session_id");
+const sessionId =
+  storedSessionId ||
+  (window.crypto?.randomUUID?.() ??
+    `session-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+window.localStorage.setItem("smarthome_session_id", sessionId);
+
 const state = {
   selectedDeviceId: null,
   devices: [],
@@ -141,6 +148,7 @@ async function sendMessage(message) {
       body: JSON.stringify({
         message,
         selected_device_id: state.selectedDeviceId,
+        session_id: sessionId,
       }),
     });
     addMessage(result.reply, "assistant");
@@ -180,6 +188,7 @@ async function toggleRecording() {
       if (state.selectedDeviceId) {
         form.append("selected_device_id", state.selectedDeviceId);
       }
+      form.append("session_id", sessionId);
       addMessage("正在识别语音…", "user");
       try {
         const response = await fetch("/api/voice/transcribe", {

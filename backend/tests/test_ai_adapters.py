@@ -1,5 +1,7 @@
 import io
 
+from smarthome.agent import SmartHomeAgent
+
 
 class FakeLlm:
     enabled = True
@@ -53,6 +55,54 @@ class FakeConnectionLlm:
         }
 
 
+class FakeToolCallingLlm:
+    enabled = True
+    model = "test-model"
+
+    def __init__(self, device_name="客厅风扇"):
+        self.device_name = device_name
+        self.calls = 0
+
+    def chat(self, messages, **options):
+        self.calls += 1
+        if options.get("tools"):
+            return {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "control_device",
+                            "arguments": (
+                                '{"device_name":"'
+                                + self.device_name
+                                + '","state":"on"}'
+                            ),
+                        },
+                    }
+                ],
+            }
+        return {
+            "role": "assistant",
+            "content": "好的，已经按你的要求处理。",
+        }
+
+
+class FakeConversationLlm:
+    enabled = True
+    model = "test-model"
+
+    def __init__(self):
+        self.requests = []
+
+    def chat(self, messages, **_options):
+        self.requests.append(messages)
+        reply = "我记住了。" if len(self.requests) == 1 else "它指的是客厅风扇。"
+        return {"role": "assistant", "content": reply}
+
+
 def test_unknown_text_can_use_validated_llm_plan(app, client):
     app.extensions["llm_interpreter"] = FakeLlm()
     result = client.post(
@@ -87,3 +137,88 @@ def test_ai_status_and_connection_probe(app, client):
     result = response.get_json()
     assert result["ok"] is True
     assert result["status"]["state"] == "connected"
+
+
+def test_agent_executes_validated_device_tool(app, client):
+    fake = FakeToolCallingLlm()
+    app.extensions["assistant_agent"] = SmartHomeAgent(fake)
+
+    result = client.post(
+        "/api/chat",
+        json={
+            "message": "有点热，帮我凉快一点",
+            "session_id": "tool-session",
+        },
+    ).get_json()
+
+    assert result["intent"] == "control_device"
+    assert result["actions"][0]["device_id"] == "fan-1"
+    assert result["ai"]["provider"] == "cloud"
+    assert fake.calls == 2
+    fan = next(
+        device
+        for device in client.get("/api/state").get_json()["devices"]
+        if device["id"] == "fan-1"
+    )
+    assert fan["state"] == "on"
+
+
+def test_agent_keeps_short_conversation_history(app, client):
+    fake = FakeConversationLlm()
+    app.extensions["assistant_agent"] = SmartHomeAgent(fake)
+
+    client.post(
+        "/api/chat",
+        json={"message": "客厅风扇有点吵", "session_id": "memory-session"},
+    )
+    result = client.post(
+        "/api/chat",
+        json={"message": "那就把它关掉吧", "session_id": "memory-session"},
+    ).get_json()
+
+    second_messages = fake.requests[1]
+    assert any(
+        message["role"] == "user" and message["content"] == "客厅风扇有点吵"
+        for message in second_messages
+    )
+    assert any(
+        message["role"] == "assistant" and message["content"] == "我记住了。"
+        for message in second_messages
+    )
+    assert result["reply"] == "它指的是客厅风扇。"
+
+
+def test_agent_isolates_conversation_sessions(app, client):
+    fake = FakeConversationLlm()
+    app.extensions["assistant_agent"] = SmartHomeAgent(fake)
+
+    client.post(
+        "/api/chat",
+        json={"message": "这是甲会话", "session_id": "session-a"},
+    )
+    client.post(
+        "/api/chat",
+        json={"message": "这是乙会话", "session_id": "session-b"},
+    )
+
+    second_messages = fake.requests[1]
+    assert not any(
+        message.get("content") in {"这是甲会话", "我记住了。"}
+        for message in second_messages
+    )
+
+
+def test_agent_cannot_control_unknown_device(app, client):
+    fake = FakeToolCallingLlm("卧室空调")
+    app.extensions["assistant_agent"] = SmartHomeAgent(fake)
+
+    result = client.post(
+        "/api/chat",
+        json={"message": "打开卧室空调", "session_id": "safe-session"},
+    ).get_json()
+
+    assert result["actions"] == []
+    assert all(
+        device["state"] == "off"
+        for device in client.get("/api/state").get_json()["devices"]
+    )

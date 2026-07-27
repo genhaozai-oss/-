@@ -1,3 +1,4 @@
+import re
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -12,10 +13,16 @@ from .weather import get_weather
 
 
 api = Blueprint("api", __name__)
+SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def error(message, status=400):
     return jsonify({"error": message}), status
+
+
+def normalize_session_id(value):
+    value = str(value or "").strip()
+    return value if SESSION_ID_PATTERN.fullmatch(value) else "default"
 
 
 def apply_llm_plan(plan):
@@ -70,7 +77,17 @@ def apply_llm_plan(plan):
     return None
 
 
-def process_message(message, selected_device_id=None):
+def process_message(message, selected_device_id=None, session_id="default"):
+    assistant_agent = current_app.extensions["assistant_agent"]
+    if assistant_agent.enabled:
+        ai_result = assistant_agent.respond(
+            message,
+            normalize_session_id(session_id),
+            selected_device_id,
+        )
+        if ai_result:
+            return ai_result
+
     result = handle_message(message, selected_device_id)
     if result["intent"] == "unknown":
         interpreter = current_app.extensions["llm_interpreter"]
@@ -158,7 +175,13 @@ def state():
 def chat():
     payload = request.get_json(silent=True) or {}
     message = str(payload.get("message", "")).strip()
-    return jsonify(process_message(message, payload.get("selected_device_id")))
+    return jsonify(
+        process_message(
+            message,
+            payload.get("selected_device_id"),
+            payload.get("session_id"),
+        )
+    )
 
 
 @api.post("/api/voice/transcribe")
@@ -196,7 +219,11 @@ def transcribe_voice():
     text = transcription["text"].strip()
     if not text:
         return error("没有识别到清晰语音，请靠近麦克风再试一次。", 422)
-    result = process_message(text, request.form.get("selected_device_id") or None)
+    result = process_message(
+        text,
+        request.form.get("selected_device_id") or None,
+        request.form.get("session_id"),
+    )
     return jsonify({"transcription": transcription, "result": result})
 
 

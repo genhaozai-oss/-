@@ -24,6 +24,7 @@ class LlmInterpreter:
         self.api_key = app.config["LLM_API_KEY"]
         self.model = app.config["LLM_MODEL"]
         self.timeout = 12
+        self.max_tokens = 500
         self.logger = app.logger
         self.last_error = None
         self.last_success_at = None
@@ -69,6 +70,8 @@ class LlmInterpreter:
             payload = json.loads(exc.read().decode("utf-8", errors="replace"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             return exc.reason or "云端服务返回 HTTP 错误"
+        if not isinstance(payload, dict):
+            return str(payload)
         error = payload.get("error", payload)
         if isinstance(error, dict):
             return error.get("message") or error.get("code") or str(error)
@@ -79,11 +82,8 @@ class LlmInterpreter:
             return None
 
         device_names = [device["name"] for device in devices]
-        payload = {
-            "model": self.model,
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-            "messages": [
+        response = self.chat(
+            [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
                     "role": "user",
@@ -93,7 +93,38 @@ class LlmInterpreter:
                     ),
                 },
             ],
+            response_format={"type": "json_object"},
+            temperature=0,
+        )
+        if not response:
+            return None
+
+        try:
+            result = json.loads(response["content"])
+        except (KeyError, TypeError, json.JSONDecodeError):
+            self._record_error("invalid_response", "云端没有返回有效的意图 JSON")
+            return None
+        if not isinstance(result, dict):
+            self._record_error("invalid_response", "云端没有返回 JSON 对象")
+            return None
+        return result
+
+    def chat(self, messages, *, tools=None, response_format=None, temperature=0.2):
+        if not self.enabled:
+            return None
+
+        payload = {
+            "model": self.model,
+            "temperature": temperature,
+            "max_tokens": self.max_tokens,
+            "messages": messages,
         }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        if response_format:
+            payload["response_format"] = response_format
+
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -125,18 +156,19 @@ class LlmInterpreter:
             return None
 
         try:
-            content = body["choices"][0]["message"]["content"]
-            result = json.loads(content)
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+            message = body["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError):
             self._record_error(
                 "invalid_response",
                 "云端响应格式不符合 Chat Completions 规范",
             )
             return None
 
-        if not isinstance(result, dict):
-            self._record_error("invalid_response", "云端没有返回 JSON 对象")
+        if not isinstance(message, dict) or (
+            not message.get("content") and not message.get("tool_calls")
+        ):
+            self._record_error("invalid_response", "云端没有返回文本或工具调用")
             return None
         self.last_error = None
         self.last_success_at = datetime.now(timezone.utc).isoformat()
-        return result
+        return message

@@ -10,6 +10,9 @@ def app(tmp_path):
             "TESTING": True,
             "DATABASE": str(tmp_path / "test.db"),
             "WEATHER_TIMEOUT_SECONDS": 0.1,
+            "LLM_BASE_URL": "",
+            "LLM_API_KEY": "",
+            "LLM_MODEL": "",
         }
     )
 
@@ -17,4 +20,3 @@ def app(tmp_path):
 @pytest.fixture()
 def client(app):
     return app.test_client()
-
