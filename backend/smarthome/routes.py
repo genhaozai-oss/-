@@ -78,6 +78,26 @@ def apply_llm_plan(plan):
 
 
 def process_message(message, selected_device_id=None, session_id="default"):
+    result = handle_message(message, selected_device_id)
+    if result["intent"] == "home_arrival":
+        weather = get_weather(database.get_settings())
+        result["weather"] = weather
+        if weather.get("available"):
+            result["reply"] += weather["summary"]
+        return result
+
+    if "天气" in message or "下雨" in message or "带伞" in message:
+        weather = get_weather(database.get_settings())
+        return {
+            "intent": "weather_query",
+            "reply": weather["summary"],
+            "actions": [],
+            "weather": weather,
+        }
+
+    if result["intent"] != "unknown":
+        return result
+
     assistant_agent = current_app.extensions["assistant_agent"]
     if assistant_agent.enabled:
         ai_result = assistant_agent.respond(
@@ -88,27 +108,11 @@ def process_message(message, selected_device_id=None, session_id="default"):
         if ai_result:
             return ai_result
 
-    result = handle_message(message, selected_device_id)
-    if result["intent"] == "unknown":
-        interpreter = current_app.extensions["llm_interpreter"]
-        plan = interpreter.classify(message, database.list_devices())
-        llm_result = apply_llm_plan(plan)
-        if llm_result:
-            result = llm_result
-
-    if result["intent"] == "home_arrival":
-        weather = get_weather(database.get_settings())
-        result["weather"] = weather
-        if weather.get("configured"):
-            result["reply"] += weather["summary"]
-    elif "天气" in message or "下雨" in message or "带伞" in message:
-        weather = get_weather(database.get_settings())
-        result = {
-            "intent": "weather_query",
-            "reply": weather["summary"],
-            "actions": [],
-            "weather": weather,
-        }
+    interpreter = current_app.extensions["llm_interpreter"]
+    plan = interpreter.classify(message, database.list_devices())
+    llm_result = apply_llm_plan(plan)
+    if llm_result:
+        result = llm_result
     return result
 
 

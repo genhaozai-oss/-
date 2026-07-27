@@ -257,6 +257,20 @@ def test_agent_keeps_short_conversation_history(app, client):
     assert result["reply"] == "它指的是客厅风扇。"
 
 
+def test_explicit_weather_query_bypasses_cloud_conversation(app, client):
+    fake = FakeConversationLlm()
+    app.extensions["assistant_agent"] = SmartHomeAgent(fake)
+
+    result = client.post(
+        "/api/chat",
+        json={"message": "今天天气怎么样", "session_id": "weather-routing"},
+    ).get_json()
+
+    assert result["intent"] == "weather_query"
+    assert result["weather"]["provider"] == "qweather"
+    assert fake.requests == []
+
+
 def test_agent_retries_with_tool_when_action_request_returns_only_text(app, client):
     fake = FakeRetryToolLlm()
     app.extensions["assistant_agent"] = SmartHomeAgent(fake)

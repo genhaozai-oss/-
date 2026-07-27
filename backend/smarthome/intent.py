@@ -114,7 +114,13 @@ def rename_device(message, selected_device_id=None):
         return {
             "intent": "rename_device",
             "reply": f"记住了，以后我会把它叫做“{new_name}”。",
-            "actions": [{"device_id": device["id"], "name": new_name}],
+            "actions": [
+                {
+                    "device_id": device["id"],
+                    "name": new_name,
+                    "room": device["room"],
+                }
+            ],
         }
 
     named_match = RENAME_NAMED_PATTERN.match(message)
@@ -147,7 +153,13 @@ def rename_device(message, selected_device_id=None):
     return {
         "intent": "rename_device",
         "reply": f"记住了，“{old_name}”现在叫“{new_name}”。",
-        "actions": [{"device_id": device["id"], "name": new_name}],
+        "actions": [
+            {
+                "device_id": device["id"],
+                "name": new_name,
+                "room": device["room"],
+            }
+        ],
     }
 
 
