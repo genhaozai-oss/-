@@ -103,6 +103,40 @@ class FakeConversationLlm:
         return {"role": "assistant", "content": reply}
 
 
+class FakeRetryToolLlm:
+    enabled = True
+    model = "test-model"
+
+    def __init__(self):
+        self.calls = 0
+
+    def chat(self, _messages, **options):
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "role": "assistant",
+                "content": "已为您关闭风扇，目前没有降温设备。",
+            }
+        if options.get("tools"):
+            return {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "retry-call",
+                        "type": "function",
+                        "function": {
+                            "name": "control_device",
+                            "arguments": (
+                                '{"device_name":"客厅风扇","state":"on"}'
+                            ),
+                        },
+                    }
+                ],
+            }
+        return {"role": "assistant", "content": "好的，已打开客厅风扇。"}
+
+
 def test_unknown_text_can_use_validated_llm_plan(app, client):
     app.extensions["llm_interpreter"] = FakeLlm()
     result = client.post(
@@ -169,16 +203,17 @@ def test_agent_keeps_short_conversation_history(app, client):
 
     client.post(
         "/api/chat",
-        json={"message": "客厅风扇有点吵", "session_id": "memory-session"},
+        json={"message": "客厅风扇是放在书房的吗", "session_id": "memory-session"},
     )
     result = client.post(
         "/api/chat",
-        json={"message": "那就把它关掉吧", "session_id": "memory-session"},
+        json={"message": "它刚才有什么问题", "session_id": "memory-session"},
     ).get_json()
 
     second_messages = fake.requests[1]
     assert any(
-        message["role"] == "user" and message["content"] == "客厅风扇有点吵"
+        message["role"] == "user"
+        and message["content"] == "客厅风扇是放在书房的吗"
         for message in second_messages
     )
     assert any(
@@ -186,6 +221,23 @@ def test_agent_keeps_short_conversation_history(app, client):
         for message in second_messages
     )
     assert result["reply"] == "它指的是客厅风扇。"
+
+
+def test_agent_retries_with_tool_when_action_request_returns_only_text(app, client):
+    fake = FakeRetryToolLlm()
+    app.extensions["assistant_agent"] = SmartHomeAgent(fake)
+
+    result = client.post(
+        "/api/chat",
+        json={
+            "message": "我现在有点热，但不要开加湿器，帮我凉快一点。",
+            "session_id": "retry-session",
+        },
+    ).get_json()
+
+    assert fake.calls == 3
+    assert result["actions"][0]["device_id"] == "fan-1"
+    assert result["actions"][0]["state"] == "on"
 
 
 def test_agent_isolates_conversation_sessions(app, client):

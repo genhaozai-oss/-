@@ -99,6 +99,36 @@ TOOLS = [
     },
 ]
 
+ACTION_REQUEST_HINTS = (
+    "打开",
+    "开启",
+    "关掉",
+    "关闭",
+    "启动",
+    "停止",
+    "帮我凉快",
+    "有点热",
+    "太热",
+    "设置闹钟",
+    "提醒我",
+    "准备回家",
+    "要回家",
+    "叫做",
+    "命名",
+    "改名",
+)
+OPERATION_CLAIMS = (
+    "已打开",
+    "已开启",
+    "已关闭",
+    "已关掉",
+    "已经打开",
+    "已经关闭",
+    "已设置",
+    "已为您",
+    "已为你",
+)
+
 
 class SmartHomeAgent:
     def __init__(self, interpreter):
@@ -129,6 +159,33 @@ class SmartHomeAgent:
             return None
 
         tool_calls = (assistant.get("tool_calls") or [])[:4]
+        if not tool_calls and self._requires_tool(
+            message,
+            str(assistant.get("content") or ""),
+        ):
+            retry_messages = [
+                messages[0],
+                {
+                    "role": "system",
+                    "content": (
+                        "这条用户消息包含实际查询或设备操作请求。"
+                        "不要用文字假装执行，必须选择合适的工具；"
+                        "如果目标无法唯一确定，也要调用工具让本地返回准确错误。"
+                    ),
+                },
+                *messages[1:],
+            ]
+            assistant = self.llm.chat(
+                retry_messages,
+                tools=TOOLS,
+                temperature=0,
+            )
+            if not assistant:
+                return None
+            tool_calls = (assistant.get("tool_calls") or [])[:4]
+            if not tool_calls:
+                return None
+
         if not tool_calls:
             reply = str(assistant.get("content") or "").strip()
             if not reply:
@@ -185,11 +242,19 @@ class SmartHomeAgent:
             "你是“栖居”，一个温暖、简洁、可靠的中文家庭智能管理助手。"
             "需要查询实时状态或执行操作时必须调用工具，绝不能假装已经操作。"
             "只能操作工具列出的已登记设备；名称不明确时应请用户说清楚。"
+            "风扇属于送风降温设备；用户说热、想凉快时应开启已登记的风扇，"
+            "加湿器只调节湿度，不能替代风扇降温。"
             "禁止建议裸线接水或直接接触220V市电，高风险设备只做安全模拟。"
             "结合最近对话理解“它”“刚才那个”等指代，回复通常不超过三句话。"
             f"\n当前时间：{now}"
             f"\n已登记设备：{device_text or '无'}"
             f"\n网页当前选中设备：{selected_text}"
+        )
+
+    @staticmethod
+    def _requires_tool(message, assistant_reply=""):
+        return any(hint in message for hint in ACTION_REQUEST_HINTS) or any(
+            claim in assistant_reply for claim in OPERATION_CLAIMS
         )
 
     def _execute_tool_call(self, tool_call, selected_device_id):
