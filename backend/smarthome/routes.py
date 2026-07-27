@@ -105,6 +105,41 @@ def health():
     return jsonify({"status": "ok"})
 
 
+@api.get("/api/ai/status")
+def ai_status():
+    interpreter = current_app.extensions["llm_interpreter"]
+    return jsonify(interpreter.status())
+
+
+@api.post("/api/ai/test")
+def test_ai_connection():
+    interpreter = current_app.extensions["llm_interpreter"]
+    if not interpreter.enabled:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "status": interpreter.status(),
+                    "error": "尚未配置云端 AI 的 Base URL 和模型名称。",
+                }
+            ),
+            503,
+        )
+
+    result = interpreter.classify(
+        "你好，请用一句简短的话介绍自己，不要控制任何设备。",
+        database.list_devices(),
+    )
+    response = {
+        "ok": result is not None,
+        "status": interpreter.status(),
+    }
+    if result is not None:
+        response["sample"] = result
+        return jsonify(response)
+    return jsonify(response), 502
+
+
 @api.get("/api/state")
 def state():
     return jsonify(

@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -23,10 +24,55 @@ class LlmInterpreter:
         self.api_key = app.config["LLM_API_KEY"]
         self.model = app.config["LLM_MODEL"]
         self.timeout = 12
+        self.logger = app.logger
+        self.last_error = None
+        self.last_success_at = None
 
     @property
     def enabled(self):
         return bool(self.base_url and self.model)
+
+    def status(self):
+        if not self.enabled:
+            state = "disabled"
+        elif self.last_error:
+            state = "error"
+        elif self.last_success_at:
+            state = "connected"
+        else:
+            state = "ready"
+        return {
+            "state": state,
+            "base_url": self.base_url,
+            "model": self.model,
+            "api_key_configured": bool(self.api_key),
+            "last_success_at": self.last_success_at,
+            "last_error": self.last_error,
+        }
+
+    def _record_error(self, error_type, message, status_code=None):
+        self.last_error = {
+            "type": error_type,
+            "message": str(message).strip()[:500],
+            "status_code": status_code,
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.logger.warning(
+            "云端 AI 调用失败：%s（HTTP %s）",
+            self.last_error["message"],
+            status_code or "-",
+        )
+
+    @staticmethod
+    def _http_error_message(exc):
+        try:
+            payload = json.loads(exc.read().decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return exc.reason or "云端服务返回 HTTP 错误"
+        error = payload.get("error", payload)
+        if isinstance(error, dict):
+            return error.get("message") or error.get("code") or str(error)
+        return str(error)
 
     def classify(self, message, devices):
         if not self.enabled:
@@ -61,20 +107,36 @@ class LlmInterpreter:
         try:
             with urlopen(request, timeout=self.timeout) as response:
                 body = json.load(response)
+        except HTTPError as exc:
+            self._record_error(
+                "http_error",
+                self._http_error_message(exc),
+                exc.code,
+            )
+            return None
+        except (URLError, TimeoutError) as exc:
+            self._record_error(
+                "network_error",
+                str(getattr(exc, "reason", None) or exc),
+            )
+            return None
+        except json.JSONDecodeError:
+            self._record_error("invalid_response", "云端返回内容不是有效 JSON")
+            return None
+
+        try:
             content = body["choices"][0]["message"]["content"]
             result = json.loads(content)
-        except (
-            HTTPError,
-            URLError,
-            TimeoutError,
-            KeyError,
-            IndexError,
-            TypeError,
-            json.JSONDecodeError,
-        ):
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+            self._record_error(
+                "invalid_response",
+                "云端响应格式不符合 Chat Completions 规范",
+            )
             return None
 
         if not isinstance(result, dict):
+            self._record_error("invalid_response", "云端没有返回 JSON 对象")
             return None
+        self.last_error = None
+        self.last_success_at = datetime.now(timezone.utc).isoformat()
         return result
-
