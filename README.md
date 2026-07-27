@@ -59,6 +59,40 @@ idf.py -p COM端口 flash monitor
 IP，以及实际使用的 GPIO。Wi-Fi 密码只保存在本机生成的 `sdkconfig` 中，该文件
 已被 Git 忽略，不会上传到仓库。
 
+## 启用本地语音识别
+
+这台项目电脑可以运行 `faster-whisper small`。首次使用会下载模型，普通文字
+功能不依赖该模型。
+
+```powershell
+cd backend
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-voice.txt
+python run.py
+```
+
+默认使用 CPU `int8`，稳定性优先。后续确认 CUDA 运行库无误后，可以切换显卡：
+
+```powershell
+$env:SMARTHOME_SPEECH_DEVICE="cuda"
+$env:SMARTHOME_SPEECH_COMPUTE_TYPE="float16"
+python run.py
+```
+
+## 启用可选大模型
+
+系统支持兼容 Chat Completions 的本地或云端服务。规则解析始终优先；只有规则
+无法理解时才请求大模型。大模型只能返回受限意图，最终设备名称和动作仍由本地
+代码校验，避免模型直接操作不存在的设备。
+
+```powershell
+$env:SMARTHOME_LLM_BASE_URL="http://127.0.0.1:11434/v1"
+$env:SMARTHOME_LLM_MODEL="本地模型名称"
+# 云端服务需要时再设置：
+# $env:SMARTHOME_LLM_API_KEY="你的密钥"
+python run.py
+```
+
 ## 推荐硬件与预算
 
 价格按常见学生购买渠道估算，购买前应再次核对。核心演示预计 300～600 元，

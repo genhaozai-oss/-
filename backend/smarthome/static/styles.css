@@ -475,7 +475,7 @@ h1 span {
 
 .chat-form {
   display: grid;
-  grid-template-columns: 1fr 43px;
+  grid-template-columns: 1fr 43px 43px;
   gap: 8px;
 }
 
@@ -498,6 +498,24 @@ h1 span {
   border-radius: 14px;
   color: var(--sage-dark);
   background: #dfe9e3;
+}
+
+.chat-form .voice-button {
+  color: #dca48d;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.chat-form .voice-button.recording {
+  color: white;
+  background: #d8786b;
+  box-shadow: 0 0 0 6px rgba(216, 120, 107, 0.16);
+  animation: pulse 1.2s infinite;
+}
+
+@keyframes pulse {
+  50% {
+    transform: scale(0.92);
+  }
 }
 
 .quick-commands {
@@ -626,4 +644,3 @@ h1 span {
     display: none;
   }
 }
-

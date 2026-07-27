@@ -1,3 +1,6 @@
+import io
+
+
 def test_health(client):
     response = client.get("/api/health")
     assert response.status_code == 200
@@ -115,3 +118,17 @@ def test_invalid_environment_is_rejected(client):
         json={"temperature": 26, "humidity": 130},
     )
     assert response.status_code == 400
+
+
+def test_voice_endpoint_returns_clear_install_message(app, client):
+    class UnavailableSpeechRecognizer:
+        available = False
+
+    app.extensions["speech_recognizer"] = UnavailableSpeechRecognizer()
+    response = client.post(
+        "/api/voice/transcribe",
+        data={"audio": (io.BytesIO(b"not-audio"), "voice.webm")},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 503
+    assert "requirements-voice.txt" in response.get_json()["error"]

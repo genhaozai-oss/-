@@ -4,8 +4,10 @@ from pathlib import Path
 from flask import Flask
 
 from . import database
+from .llm import LlmInterpreter
 from .mqtt_bridge import MqttBridge
 from .routes import api
+from .voice import SpeechRecognizer
 
 
 def create_app(test_config=None):
@@ -18,6 +20,13 @@ def create_app(test_config=None):
         MQTT_BROKER_URI=os.getenv("SMARTHOME_MQTT_BROKER", "mqtt://127.0.0.1:1883"),
         MQTT_USERNAME=os.getenv("SMARTHOME_MQTT_USERNAME", ""),
         MQTT_PASSWORD=os.getenv("SMARTHOME_MQTT_PASSWORD", ""),
+        LLM_BASE_URL=os.getenv("SMARTHOME_LLM_BASE_URL", ""),
+        LLM_API_KEY=os.getenv("SMARTHOME_LLM_API_KEY", ""),
+        LLM_MODEL=os.getenv("SMARTHOME_LLM_MODEL", ""),
+        SPEECH_MODEL=os.getenv("SMARTHOME_SPEECH_MODEL", "small"),
+        SPEECH_DEVICE=os.getenv("SMARTHOME_SPEECH_DEVICE", "cpu"),
+        SPEECH_COMPUTE_TYPE=os.getenv("SMARTHOME_SPEECH_COMPUTE_TYPE", "int8"),
+        MAX_CONTENT_LENGTH=10 * 1024 * 1024,
         TESTING=False,
     )
 
@@ -29,6 +38,8 @@ def create_app(test_config=None):
     app.register_blueprint(api)
     mqtt_bridge = MqttBridge(app)
     app.extensions["mqtt_bridge"] = mqtt_bridge
+    app.extensions["llm_interpreter"] = LlmInterpreter(app)
+    app.extensions["speech_recognizer"] = SpeechRecognizer(app)
 
     with app.app_context():
         database.init_db()

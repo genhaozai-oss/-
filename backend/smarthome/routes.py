@@ -1,10 +1,12 @@
 import sqlite3
+import tempfile
+from pathlib import Path
 
-from flask import Blueprint, jsonify, request, send_from_directory
+from flask import Blueprint, current_app, jsonify, request, send_from_directory
 
 from . import database
 from .devices import set_device_state
-from .home import run_comfort_rules
+from .home import run_comfort_rules, run_home_arrival
 from .intent import handle_message
 from .weather import get_weather
 
@@ -14,6 +16,83 @@ api = Blueprint("api", __name__)
 
 def error(message, status=400):
     return jsonify({"error": message}), status
+
+
+def apply_llm_plan(plan):
+    if not isinstance(plan, dict):
+        return None
+    intent = plan.get("intent")
+    if intent == "device_control":
+        device_name = str(plan.get("device_name", "")).strip()
+        state = plan.get("state")
+        matches = database.find_devices(device_name)
+        if len(matches) != 1 or state not in {"on", "off"}:
+            return None
+        device = set_device_state(matches[0]["id"], state)
+        verb = "打开" if state == "on" else "关闭"
+        return {
+            "intent": "device_control",
+            "reply": f"好的，已{verb}{device['name']}。",
+            "actions": [
+                {
+                    "device_id": device["id"],
+                    "device_name": device["name"],
+                    "state": state,
+                    "is_virtual": bool(device["is_virtual"]),
+                }
+            ],
+        }
+    if intent == "home_arrival":
+        return run_home_arrival()
+    if intent == "environment_query":
+        environment = database.get_environment()
+        return {
+            "intent": intent,
+            "reply": (
+                f"室内温度 {environment['temperature']:.1f}℃，"
+                f"湿度 {environment['humidity']:.0f}%。"
+            ),
+            "actions": [],
+            "environment": environment,
+        }
+    if intent == "weather_query":
+        weather = get_weather(database.get_settings())
+        return {
+            "intent": intent,
+            "reply": weather["summary"],
+            "actions": [],
+            "weather": weather,
+        }
+    if intent == "conversation":
+        reply = str(plan.get("reply", "")).strip()
+        if reply:
+            return {"intent": intent, "reply": reply[:300], "actions": []}
+    return None
+
+
+def process_message(message, selected_device_id=None):
+    result = handle_message(message, selected_device_id)
+    if result["intent"] == "unknown":
+        interpreter = current_app.extensions["llm_interpreter"]
+        plan = interpreter.classify(message, database.list_devices())
+        llm_result = apply_llm_plan(plan)
+        if llm_result:
+            result = llm_result
+
+    if result["intent"] == "home_arrival":
+        weather = get_weather(database.get_settings())
+        result["weather"] = weather
+        if weather.get("configured"):
+            result["reply"] += weather["summary"]
+    elif "天气" in message or "下雨" in message or "带伞" in message:
+        weather = get_weather(database.get_settings())
+        result = {
+            "intent": "weather_query",
+            "reply": weather["summary"],
+            "actions": [],
+            "weather": weather,
+        }
+    return result
 
 
 @api.get("/")
@@ -44,23 +123,46 @@ def state():
 def chat():
     payload = request.get_json(silent=True) or {}
     message = str(payload.get("message", "")).strip()
-    result = handle_message(message, payload.get("selected_device_id"))
+    return jsonify(process_message(message, payload.get("selected_device_id")))
 
-    if result["intent"] == "home_arrival":
-        weather = get_weather(database.get_settings())
-        result["weather"] = weather
-        if weather.get("configured"):
-            result["reply"] += weather["summary"]
-    elif "天气" in message or "下雨" in message or "带伞" in message:
-        weather = get_weather(database.get_settings())
-        result = {
-            "intent": "weather_query",
-            "reply": weather["summary"],
-            "actions": [],
-            "weather": weather,
-        }
 
-    return jsonify(result)
+@api.post("/api/voice/transcribe")
+def transcribe_voice():
+    recognizer = current_app.extensions["speech_recognizer"]
+    if not recognizer.available:
+        return error(
+            "尚未安装本地语音模型，请安装 requirements-voice.txt。",
+            503,
+        )
+
+    audio = request.files.get("audio")
+    if not audio or not audio.filename:
+        return error("没有收到录音文件。")
+
+    suffix = Path(audio.filename).suffix.lower()
+    if suffix not in {".webm", ".wav", ".mp3", ".m4a", ".ogg"}:
+        suffix = ".webm"
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temporary:
+            temporary_path = Path(temporary.name)
+            audio.save(temporary)
+        transcription = recognizer.transcribe(temporary_path)
+    except Exception:
+        current_app.logger.exception("本地语音识别失败")
+        return error(
+            "本地语音模型加载或识别失败，请检查模型缓存和运行配置。",
+            503,
+        )
+    finally:
+        if temporary_path:
+            temporary_path.unlink(missing_ok=True)
+
+    text = transcription["text"].strip()
+    if not text:
+        return error("没有识别到清晰语音，请靠近麦克风再试一次。", 422)
+    result = process_message(text, request.form.get("selected_device_id") or None)
+    return jsonify({"transcription": transcription, "result": result})
 
 
 @api.post("/api/environment")

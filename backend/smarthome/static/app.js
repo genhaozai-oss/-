@@ -150,6 +150,59 @@ async function sendMessage(message) {
   }
 }
 
+let mediaRecorder = null;
+let recordedChunks = [];
+
+async function toggleRecording() {
+  const button = document.querySelector("#voiceButton");
+  if (mediaRecorder?.state === "recording") {
+    mediaRecorder.stop();
+    button.classList.remove("recording");
+    return;
+  }
+  if (!navigator.mediaDevices || !window.MediaRecorder) {
+    showToast("当前浏览器不支持录音，请使用文字输入");
+    return;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    recordedChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.addEventListener("dataavailable", (event) => {
+      if (event.data.size > 0) recordedChunks.push(event.data);
+    });
+    mediaRecorder.addEventListener("stop", async () => {
+      stream.getTracks().forEach((track) => track.stop());
+      const audio = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
+      const form = new FormData();
+      form.append("audio", audio, "recording.webm");
+      if (state.selectedDeviceId) {
+        form.append("selected_device_id", state.selectedDeviceId);
+      }
+      addMessage("正在识别语音…", "user");
+      try {
+        const response = await fetch("/api/voice/transcribe", {
+          method: "POST",
+          body: form,
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "语音识别失败");
+        addMessage(`识别结果：${result.transcription.text}`, "assistant");
+        addMessage(result.result.reply, "assistant");
+        await refreshState();
+      } catch (error) {
+        addMessage(`语音识别失败：${error.message}`, "assistant");
+      }
+    });
+    mediaRecorder.start();
+    button.classList.add("recording");
+    showToast("正在聆听，再点一次结束");
+  } catch (error) {
+    showToast("无法使用麦克风，请检查浏览器权限");
+  }
+}
+
 document.querySelector("#chatForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = document.querySelector("#chatInput");
@@ -158,6 +211,8 @@ document.querySelector("#chatForm").addEventListener("submit", async (event) => 
   input.value = "";
   await sendMessage(message);
 });
+
+document.querySelector("#voiceButton").addEventListener("click", toggleRecording);
 
 document.querySelectorAll("[data-message]").forEach((button) => {
   button.addEventListener("click", () => sendMessage(button.dataset.message));
