@@ -10,6 +10,7 @@ from .llm import LlmInterpreter
 from .mqtt_bridge import MqttBridge
 from .routes import api
 from .voice import SpeechRecognizer
+from .weather import clear_weather_cache
 
 
 def create_app(test_config=None):
@@ -21,6 +22,9 @@ def create_app(test_config=None):
     app.config.from_mapping(
         DATABASE=str(default_db),
         WEATHER_TIMEOUT_SECONDS=5,
+        WEATHER_CACHE_SECONDS=600,
+        WEATHER_API_HOST=os.getenv("SMARTHOME_WEATHER_API_HOST", ""),
+        WEATHER_API_KEY=os.getenv("SMARTHOME_WEATHER_API_KEY", ""),
         MQTT_ENABLED=os.getenv("SMARTHOME_MQTT_ENABLED") == "1",
         MQTT_BROKER_URI=os.getenv("SMARTHOME_MQTT_BROKER", "mqtt://127.0.0.1:1883"),
         MQTT_USERNAME=os.getenv("SMARTHOME_MQTT_USERNAME", ""),
@@ -37,6 +41,7 @@ def create_app(test_config=None):
 
     if test_config:
         app.config.update(test_config)
+    clear_weather_cache()
 
     Path(app.instance_path).mkdir(parents=True, exist_ok=True)
     database.init_app(app)

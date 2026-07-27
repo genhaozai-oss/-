@@ -146,11 +146,13 @@ def test_location_can_be_saved_from_browser_coordinates(client):
     assert response.get_json()["settings"]["location_name"] == "当前位置"
 
 
-def test_city_name_is_automatically_geocoded(client, monkeypatch):
+def test_city_name_is_automatically_geocoded(app, client, monkeypatch):
+    app.config["WEATHER_API_HOST"] = "test.qweatherapi.com"
+    app.config["WEATHER_API_KEY"] = "test-weather-key"
     payload = io.BytesIO(
         (
-            '{"results":[{"name":"广州","latitude":23.11667,'
-            '"longitude":113.25,"country":"中国","admin1":"广东"}]}'
+            '{"code":"200","location":[{"name":"广州","id":"101280101",'
+            '"lat":"23.11667","lon":"113.25","country":"中国","adm1":"广东"}]}'
         ).encode()
     )
     monkeypatch.setattr(
@@ -168,6 +170,55 @@ def test_city_name_is_automatically_geocoded(client, monkeypatch):
     assert settings["location_name"] == "广州"
     assert float(settings["latitude"]) == 23.11667
     assert float(settings["longitude"]) == 113.25
+    assert settings["weather_location_id"] == "101280101"
+
+
+def test_qweather_response_is_cached_for_ten_minutes(app, client, monkeypatch):
+    app.config["WEATHER_API_HOST"] = "test.qweatherapi.com"
+    app.config["WEATHER_API_KEY"] = "test-weather-key"
+    responses = [
+        (
+            '{"code":"200","updateTime":"2026-07-27T15:00+08:00",'
+            '"now":{"temp":"31","feelsLike":"35","text":"小雨",'
+            '"humidity":"80","windDir":"东南风","windScale":"2",'
+            '"precip":"0.4"}}'
+        ).encode(),
+        (
+            '{"code":"200","daily":[{"tempMin":"25","tempMax":"32",'
+            '"textDay":"小雨"}]}'
+        ).encode(),
+        (
+            '{"code":"200","hourly":[{"pop":"30"},{"pop":"80"}]}'
+        ).encode(),
+    ]
+    calls = []
+
+    def fake_urlopen(*_args, **_kwargs):
+        calls.append(True)
+        return io.BytesIO(responses[len(calls) - 1])
+
+    monkeypatch.setattr("smarthome.weather.urlopen", fake_urlopen)
+    with app.app_context():
+        from smarthome import database
+
+        database.set_settings(
+            {
+                "location_name": "广州",
+                "weather_location_id": "101280101",
+                "latitude": 23.11667,
+                "longitude": 113.25,
+            }
+        )
+
+    first = client.get("/api/weather").get_json()
+    second = client.get("/api/weather").get_json()
+
+    assert first["available"] is True
+    assert first["provider"] == "qweather"
+    assert "体感35℃" in first["summary"]
+    assert "最高降雨概率 80%" in first["summary"]
+    assert second == first
+    assert len(calls) == 3
 
 
 def test_alarm_can_be_created_and_deleted(client):

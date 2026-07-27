@@ -317,12 +317,14 @@ def location():
         latitude = location["latitude"]
         longitude = location["longitude"]
         location_name = location["location_name"]
+        location_id = location["location_id"]
     else:
         try:
             latitude = float(payload["latitude"])
             longitude = float(payload["longitude"])
         except (KeyError, TypeError, ValueError):
-            return error("无法获取当前位置，请改为填写城市名。")
+            return error("请直接填写城市名。")
+        location_id = ""
 
     try:
         latitude = float(latitude)
@@ -337,6 +339,7 @@ def location():
             "latitude": latitude,
             "longitude": longitude,
             "location_name": location_name or "当前位置",
+            "weather_location_id": location_id,
         }
     )
     return jsonify({"settings": settings})

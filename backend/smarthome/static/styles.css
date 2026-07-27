@@ -305,7 +305,7 @@ h1 span {
 
 .location-form {
   display: grid;
-  grid-template-columns: minmax(140px, 1fr) auto auto;
+  grid-template-columns: minmax(140px, 1fr) auto;
   gap: 8px;
 }
 
@@ -328,10 +328,16 @@ h1 span {
   background: white;
 }
 
-.location-form button:last-child {
-  border: 1px solid rgba(255, 255, 255, 0.45);
+.weather-source {
+  display: inline-block;
+  margin-top: 13px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.weather-source:hover {
   color: white;
-  background: transparent;
 }
 
 .device-list {

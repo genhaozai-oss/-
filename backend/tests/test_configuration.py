@@ -1,6 +1,7 @@
 from dotenv import dotenv_values
 
 import configure_ai
+import configure_weather
 
 
 def test_ai_configuration_is_saved_for_future_startups(tmp_path, monkeypatch):
@@ -20,3 +21,37 @@ def test_ai_configuration_is_saved_for_future_startups(tmp_path, monkeypatch):
 def test_token_plan_key_is_rejected():
     message = configure_ai.validate_key("sk-sp-12345678901234567890")
     assert "Token Plan" in message
+
+
+def test_weather_configuration_is_saved_after_connection_check(
+    tmp_path, monkeypatch
+):
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(configure_weather, "ENV_PATH", env_path)
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _prompt: "abc123.qweatherapi.com",
+    )
+    monkeypatch.setattr(
+        configure_weather,
+        "read_secret",
+        lambda _prompt: "weather-key-123456",
+    )
+    monkeypatch.setattr(
+        configure_weather,
+        "test_credentials",
+        lambda _host, _key: (True, "连接成功"),
+    )
+
+    configure_weather.main()
+
+    values = dotenv_values(env_path)
+    assert values["SMARTHOME_WEATHER_API_HOST"] == "abc123.qweatherapi.com"
+    assert values["SMARTHOME_WEATHER_API_KEY"] == "weather-key-123456"
+
+
+def test_weather_host_rejects_full_api_path():
+    host = configure_weather.normalize_host(
+        "https://abc123.qweatherapi.com/v7/weather/now"
+    )
+    assert configure_weather.validate_host(host) is not None

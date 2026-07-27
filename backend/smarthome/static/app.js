@@ -326,45 +326,6 @@ document.querySelector("#locationForm").addEventListener("submit", async (event)
   }
 });
 
-document.querySelector("#useCurrentLocationButton").addEventListener("click", () => {
-  const button = document.querySelector("#useCurrentLocationButton");
-  if (!navigator.geolocation) {
-    showToast("当前浏览器不支持定位，请直接填写城市名");
-    return;
-  }
-
-  button.disabled = true;
-  button.textContent = "正在定位…";
-  navigator.geolocation.getCurrentPosition(
-    async (position) => {
-      try {
-        await api("/api/settings/location", {
-          method: "PUT",
-          body: JSON.stringify({
-            location_name: "当前位置",
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-          }),
-        });
-        state.weatherUpdatedAt = 0;
-        showToast("已使用当前位置");
-        await refreshState();
-      } catch (error) {
-        showToast(error.message);
-      } finally {
-        button.disabled = false;
-        button.textContent = "使用当前位置";
-      }
-    },
-    () => {
-      button.disabled = false;
-      button.textContent = "使用当前位置";
-      showToast("定位未授权，请直接填写城市名");
-    },
-    { enableHighAccuracy: false, timeout: 8000, maximumAge: 600000 },
-  );
-});
-
 const currentHour = new Date().getHours();
 document.querySelector("#greeting").textContent =
   currentHour < 11 ? "早上好" : currentHour < 18 ? "下午好" : "晚上好";
