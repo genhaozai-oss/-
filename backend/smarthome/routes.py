@@ -9,7 +9,7 @@ from . import database
 from .devices import set_device_capability, set_device_state
 from .home import run_comfort_rules, run_home_arrival
 from .intent import handle_message
-from .weather import get_weather
+from .weather import geocode_location, get_weather
 
 
 api = Blueprint("api", __name__)
@@ -306,11 +306,29 @@ def weather():
 @api.put("/api/settings/location")
 def location():
     payload = request.get_json(silent=True) or {}
+    location_name = str(payload.get("location_name", "")).strip()
+
+    if "latitude" not in payload and "longitude" not in payload:
+        location = geocode_location(location_name)
+        if not location["available"]:
+            return error(location["summary"], 503)
+        if not location["found"]:
+            return error(location["summary"])
+        latitude = location["latitude"]
+        longitude = location["longitude"]
+        location_name = location["location_name"]
+    else:
+        try:
+            latitude = float(payload["latitude"])
+            longitude = float(payload["longitude"])
+        except (KeyError, TypeError, ValueError):
+            return error("无法获取当前位置，请改为填写城市名。")
+
     try:
-        latitude = float(payload["latitude"])
-        longitude = float(payload["longitude"])
-    except (KeyError, TypeError, ValueError):
-        return error("经纬度必须是数字。")
+        latitude = float(latitude)
+        longitude = float(longitude)
+    except (TypeError, ValueError):
+        return error("位置坐标格式不正确。")
     if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
         return error("经纬度超出有效范围。")
 
@@ -318,8 +336,7 @@ def location():
         {
             "latitude": latitude,
             "longitude": longitude,
-            "location_name": str(payload.get("location_name", "当前位置")).strip()
-            or "当前位置",
+            "location_name": location_name or "当前位置",
         }
     )
     return jsonify({"settings": settings})

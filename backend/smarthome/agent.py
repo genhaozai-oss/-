@@ -168,8 +168,33 @@ TOOLS = [
                         "type": "string",
                         "description": "用户希望记住的新名称。",
                     },
+                    "room": {
+                        "type": "string",
+                        "description": "设备所在房间；新名称包含房间时应同步填写。",
+                    },
                 },
                 "required": ["new_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_device_location",
+            "description": "记住一个已登记设备当前所在的房间或位置。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "device_name": {
+                        "type": "string",
+                        "description": "当前设备名称；用户说这个或它时可填写这个设备。",
+                    },
+                    "room": {
+                        "type": "string",
+                        "description": "设备所在房间，例如厨房、客厅、厕所。",
+                    },
+                },
+                "required": ["room"],
             },
         },
     },
@@ -192,6 +217,9 @@ ACTION_REQUEST_HINTS = (
     "叫做",
     "命名",
     "改名",
+    "搬到",
+    "位置",
+    "房间",
     "风速",
     "亮度",
     "调到",
@@ -323,7 +351,8 @@ class SmartHomeAgent:
             )
             suffix = f"，能力：{capability_text}" if capability_text else ""
             device_descriptions.append(
-                f"{device['name']}（{device['type']}，{device['state']}{suffix}）"
+                f"{device['name']}（房间：{device['room']}，"
+                f"{device['type']}，{device['state']}{suffix}）"
             )
         device_text = "；".join(device_descriptions)
         preference_text = "、".join(
@@ -340,6 +369,8 @@ class SmartHomeAgent:
             "设备能力来自动态注册表，只能调节该设备已经注册的能力。"
             "用户明确告诉你设备支持新能力时调用记忆工具；"
             "用户表达长期偏好时调用偏好工具，后续相关操作主动采用已记住偏好。"
+            "给设备改名时，如果新名称包含房间（如厕所灯、厨房风扇），"
+            "必须同时更新设备房间；用户说明设备放在哪里时调用位置工具。"
             "禁止建议裸线接水或直接接触220V市电，高风险设备只做安全模拟。"
             "结合最近对话理解“它”“刚才那个”等指代，回复通常不超过三句话。"
             f"\n当前时间：{now}"
@@ -381,6 +412,9 @@ class SmartHomeAgent:
             "get_weather": self._get_weather,
             "create_alarm": self._create_alarm,
             "rename_device": lambda args: self._rename_device(
+                args, selected_device_id
+            ),
+            "update_device_location": lambda args: self._update_device_location(
                 args, selected_device_id
             ),
         }
@@ -660,18 +694,67 @@ class SmartHomeAgent:
             )
 
         old_name = matches[0]["name"]
+        room = str(arguments.get("room", "")).strip()
+        room = room or database.infer_room_from_name(new_name) or matches[0]["room"]
+        if len(room) > 20:
+            return SmartHomeAgent._failure(
+                "rename_device", "房间名称不能超过20个字符。"
+            )
         try:
-            device = database.update_device(matches[0]["id"], name=new_name)
+            device = database.update_device(
+                matches[0]["id"], name=new_name, room=room
+            )
         except sqlite3.IntegrityError:
             return SmartHomeAgent._failure(
                 "rename_device", f"已经有设备叫“{new_name}”。"
             )
-        action = {"device_id": device["id"], "name": new_name}
+        action = {
+            "device_id": device["id"],
+            "name": new_name,
+            "room": device["room"],
+        }
         database.log_event("device", f"{old_name}已命名为{new_name}", action)
         return {
             "ok": True,
             "intent": "rename_device",
             "message": f"已记住，“{old_name}”现在叫“{new_name}”。",
+            "device": device,
+            "actions": [action],
+        }
+
+    @staticmethod
+    def _update_device_location(arguments, selected_device_id):
+        current_name = str(arguments.get("device_name", "")).strip()
+        room = str(arguments.get("room", "")).strip()
+        if not room or len(room) > 20:
+            return SmartHomeAgent._failure(
+                "update_device_location", "房间名称应为1至20个字符。"
+            )
+
+        selected_words = {"", "这个", "它", "这个设备", "选中的设备"}
+        if current_name in selected_words and selected_device_id:
+            device = database.get_device(selected_device_id)
+            matches = [device] if device else []
+        else:
+            matches = database.find_devices(current_name) if current_name else []
+        if not matches:
+            return SmartHomeAgent._failure(
+                "update_device_location", "没有找到这个设备，请先在网页中选中它。"
+            )
+        if len(matches) > 1:
+            return SmartHomeAgent._failure(
+                "update_device_location", "找到了多个设备，请使用更完整的名称。"
+            )
+
+        device = database.update_device(matches[0]["id"], room=room)
+        action = {"device_id": device["id"], "room": room}
+        database.log_event(
+            "device", f"{device['name']}的位置已更新为{room}", action
+        )
+        return {
+            "ok": True,
+            "intent": "update_device_location",
+            "message": f"已记住，{device['name']}在{room}。",
             "device": device,
             "actions": [action],
         }

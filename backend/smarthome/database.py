@@ -120,9 +120,35 @@ SEED_CAPABILITIES = (
     ("light-1", "brightness"),
 )
 
+KNOWN_ROOMS = (
+    "客厅",
+    "卧室",
+    "主卧",
+    "次卧",
+    "书房",
+    "厨房",
+    "厕所",
+    "卫生间",
+    "浴室",
+    "阳台",
+    "餐厅",
+    "玄关",
+)
+DEVICE_NAME_SUFFIXES = ("灯", "风扇", "加湿器", "抽湿器", "除湿器", "窗帘", "空调")
+
 
 def now_iso():
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def infer_room_from_name(name):
+    normalized = str(name or "").strip()
+    for room in sorted(KNOWN_ROOMS, key=len, reverse=True):
+        if normalized.startswith(room) and any(
+            normalized.endswith(suffix) for suffix in DEVICE_NAME_SUFFIXES
+        ):
+            return room
+    return None
 
 
 def get_db():
@@ -178,6 +204,24 @@ def init_db():
                 definition["unit"],
                 timestamp,
             ),
+        )
+    migrated = db.execute(
+        "SELECT value FROM settings WHERE key = 'device_room_name_sync_v1'"
+    ).fetchone()
+    if not migrated:
+        devices = db.execute("SELECT id, name, room FROM devices").fetchall()
+        for device in devices:
+            inferred_room = infer_room_from_name(device["name"])
+            if inferred_room and inferred_room != device["room"]:
+                db.execute(
+                    "UPDATE devices SET room = ?, updated_at = ? WHERE id = ?",
+                    (inferred_room, timestamp, device["id"]),
+                )
+        db.execute(
+            """
+            INSERT INTO settings (key, value)
+            VALUES ('device_room_name_sync_v1', 'done')
+            """
         )
     db.commit()
 

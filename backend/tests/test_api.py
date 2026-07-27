@@ -39,6 +39,12 @@ def test_selected_device_can_be_renamed_and_remembered(client):
     response = client.post("/api/chat", json={"message": "打开厨房风扇"})
     result = response.get_json()
     assert result["actions"][0]["device_name"] == "厨房风扇"
+    fan = next(
+        device
+        for device in client.get("/api/state").get_json()["devices"]
+        if device["id"] == "fan-1"
+    )
+    assert fan["room"] == "厨房"
 
 
 def test_pronoun_rename_requires_selected_device(client):
@@ -102,6 +108,66 @@ def test_home_arrival_scene_returns_warm_reply(client):
     assert result["intent"] == "home_arrival"
     assert "辛苦啦" in result["reply"]
     assert "weather" in result
+
+
+def test_home_arrival_reports_high_humidity_even_when_dehumidifier_is_already_on(
+    client,
+):
+    client.post(
+        "/api/environment",
+        json={"temperature": 27, "humidity": 94},
+    )
+    result = client.post(
+        "/api/chat",
+        json={"message": "我要下班回家了"},
+    ).get_json()
+
+    assert "湿度偏高" in result["reply"]
+    assert "抽湿" in result["reply"]
+    assert "比较舒适" not in result["reply"]
+    dehumidifier = next(
+        device
+        for device in client.get("/api/state").get_json()["devices"]
+        if device["id"] == "dehumidifier-1"
+    )
+    assert dehumidifier["state"] == "on"
+
+
+def test_location_can_be_saved_from_browser_coordinates(client):
+    response = client.put(
+        "/api/settings/location",
+        json={
+            "location_name": "当前位置",
+            "latitude": 23.1291,
+            "longitude": 113.2644,
+        },
+    )
+    assert response.status_code == 200
+    assert response.get_json()["settings"]["location_name"] == "当前位置"
+
+
+def test_city_name_is_automatically_geocoded(client, monkeypatch):
+    payload = io.BytesIO(
+        (
+            '{"results":[{"name":"广州","latitude":23.11667,'
+            '"longitude":113.25,"country":"中国","admin1":"广东"}]}'
+        ).encode()
+    )
+    monkeypatch.setattr(
+        "smarthome.weather.urlopen",
+        lambda *_args, **_kwargs: payload,
+    )
+
+    response = client.put(
+        "/api/settings/location",
+        json={"location_name": "广州"},
+    )
+
+    assert response.status_code == 200
+    settings = response.get_json()["settings"]
+    assert settings["location_name"] == "广州"
+    assert float(settings["latitude"]) == 23.11667
+    assert float(settings["longitude"]) == 113.25
 
 
 def test_alarm_can_be_created_and_deleted(client):

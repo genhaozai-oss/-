@@ -53,7 +53,47 @@ def run_comfort_rules():
     return environment, actions
 
 
-def describe_actions(actions):
+def describe_actions(environment, actions):
+    devices = database.list_devices()
+    status = []
+
+    if environment["temperature"] >= 28:
+        fans = [
+            device["name"]
+            for device in devices
+            if device["type"] == "fan" and device["state"] == "on"
+        ]
+        status.append(
+            f"温度偏高，{'、'.join(fans)}已开启"
+            if fans
+            else "温度偏高，但没有可用风扇"
+        )
+
+    if environment["humidity"] > 70:
+        dehumidifiers = [
+            device["name"]
+            for device in devices
+            if device["type"] == "dehumidifier" and device["state"] == "on"
+        ]
+        status.append(
+            f"湿度偏高，{'、'.join(dehumidifiers)}已开启"
+            if dehumidifiers
+            else "湿度偏高，但没有可用抽湿设备"
+        )
+    elif environment["humidity"] < 40:
+        humidifiers = [
+            device["name"]
+            for device in devices
+            if device["type"] == "humidifier" and device["state"] == "on"
+        ]
+        status.append(
+            f"湿度偏低，{'、'.join(humidifiers)}已开启"
+            if humidifiers
+            else "湿度偏低，但没有可用加湿设备"
+        )
+
+    if status:
+        return "；".join(status)
     if not actions:
         return "室内环境目前比较舒适，设备保持原状态"
 
@@ -67,7 +107,7 @@ def describe_actions(actions):
 
 def run_home_arrival():
     environment, actions = run_comfort_rules()
-    action_text = describe_actions(actions)
+    action_text = describe_actions(environment, actions)
     reply = (
         "辛苦啦，回家的路上注意安全。"
         f"家里现在 {environment['temperature']:.1f}℃，"

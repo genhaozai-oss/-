@@ -305,7 +305,7 @@ h1 span {
 
 .location-form {
   display: grid;
-  grid-template-columns: 1.2fr 1fr 1fr auto;
+  grid-template-columns: minmax(140px, 1fr) auto auto;
   gap: 8px;
 }
 
@@ -326,6 +326,12 @@ h1 span {
 .location-form button {
   color: var(--sage-dark);
   background: white;
+}
+
+.location-form button:last-child {
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  color: white;
+  background: transparent;
 }
 
 .device-list {
@@ -622,6 +628,40 @@ h1 span {
 .toast.show {
   opacity: 1;
   transform: translateY(0);
+}
+
+.scene-banner {
+  position: fixed;
+  top: 22px;
+  left: 50%;
+  z-index: 20;
+  display: grid;
+  gap: 4px;
+  width: min(90vw, 520px);
+  padding: 17px 22px;
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  border-radius: 18px;
+  color: white;
+  background: rgba(41, 70, 60, 0.94);
+  box-shadow: 0 18px 50px rgba(31, 50, 43, 0.28);
+  opacity: 0;
+  transform: translate(-50%, -18px);
+  pointer-events: none;
+  transition: 0.25s ease;
+}
+
+.scene-banner strong {
+  font-size: 18px;
+}
+
+.scene-banner span {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 13px;
+}
+
+.scene-banner.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
 }
 
 @media (max-width: 840px) {

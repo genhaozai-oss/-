@@ -38,6 +38,18 @@ function showToast(message) {
   window.setTimeout(() => toast.classList.remove("show"), 2200);
 }
 
+let sceneBannerTimer = null;
+
+function showSceneBanner() {
+  const banner = document.querySelector("#sceneBanner");
+  window.clearTimeout(sceneBannerTimer);
+  banner.classList.add("show");
+  sceneBannerTimer = window.setTimeout(
+    () => banner.classList.remove("show"),
+    5000,
+  );
+}
+
 function addMessage(text, role) {
   const messages = document.querySelector("#messages");
   const element = document.createElement("div");
@@ -156,8 +168,12 @@ function renderAlarms(alarms) {
 }
 
 async function refreshWeather(settings) {
-  if (!settings.latitude || !settings.longitude) return;
+  if (settings.latitude == null || settings.longitude == null) return;
   document.querySelector("#locationTitle").textContent = settings.location_name || "当前位置";
+  const locationInput = document.querySelector("#locationName");
+  if (document.activeElement !== locationInput) {
+    locationInput.value = settings.location_name || "";
+  }
   if (Date.now() - state.weatherUpdatedAt < 10 * 60 * 1000) return;
   try {
     const weather = await api("/api/weather");
@@ -196,6 +212,7 @@ async function sendMessage(message) {
       }),
     });
     addMessage(result.reply, "assistant");
+    if (result.intent === "home_arrival") showSceneBanner();
     await refreshState();
   } catch (error) {
     addMessage(`操作失败：${error.message}`, "assistant");
@@ -272,6 +289,7 @@ document.querySelectorAll("[data-message]").forEach((button) => {
 });
 
 document.querySelector("#homeSceneButton").addEventListener("click", () => {
+  showSceneBanner();
   sendMessage("我要下班回家了");
 });
 
@@ -298,8 +316,6 @@ document.querySelector("#locationForm").addEventListener("submit", async (event)
       method: "PUT",
       body: JSON.stringify({
         location_name: document.querySelector("#locationName").value,
-        latitude: document.querySelector("#latitude").value,
-        longitude: document.querySelector("#longitude").value,
       }),
     });
     state.weatherUpdatedAt = 0;
@@ -308,6 +324,45 @@ document.querySelector("#locationForm").addEventListener("submit", async (event)
   } catch (error) {
     showToast(error.message);
   }
+});
+
+document.querySelector("#useCurrentLocationButton").addEventListener("click", () => {
+  const button = document.querySelector("#useCurrentLocationButton");
+  if (!navigator.geolocation) {
+    showToast("当前浏览器不支持定位，请直接填写城市名");
+    return;
+  }
+
+  button.disabled = true;
+  button.textContent = "正在定位…";
+  navigator.geolocation.getCurrentPosition(
+    async (position) => {
+      try {
+        await api("/api/settings/location", {
+          method: "PUT",
+          body: JSON.stringify({
+            location_name: "当前位置",
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+          }),
+        });
+        state.weatherUpdatedAt = 0;
+        showToast("已使用当前位置");
+        await refreshState();
+      } catch (error) {
+        showToast(error.message);
+      } finally {
+        button.disabled = false;
+        button.textContent = "使用当前位置";
+      }
+    },
+    () => {
+      button.disabled = false;
+      button.textContent = "使用当前位置";
+      showToast("定位未授权，请直接填写城市名");
+    },
+    { enableHighAccuracy: false, timeout: 8000, maximumAge: 600000 },
+  );
 });
 
 const currentHour = new Date().getHours();

@@ -28,13 +28,64 @@ WEATHER_CODES = {
 }
 
 
+def geocode_location(location_name):
+    name = str(location_name or "").strip()
+    if not name:
+        return {
+            "available": True,
+            "found": False,
+            "summary": "请输入城市名。",
+        }
+
+    query = urlencode(
+        {
+            "name": name,
+            "count": 1,
+            "language": "zh",
+            "format": "json",
+        }
+    )
+    url = f"https://geocoding-api.open-meteo.com/v1/search?{query}"
+    try:
+        with urlopen(
+            url, timeout=current_app.config["WEATHER_TIMEOUT_SECONDS"]
+        ) as response:
+            data = json.load(response)
+    except Exception as error:
+        return {
+            "available": False,
+            "found": False,
+            "summary": "城市查询服务暂时不可用，请稍后再试。",
+            "error": str(error),
+        }
+
+    results = data.get("results") or []
+    if not results:
+        return {
+            "available": True,
+            "found": False,
+            "summary": f"没有找到“{name}”，请尝试填写完整城市名。",
+        }
+
+    result = results[0]
+    return {
+        "available": True,
+        "found": True,
+        "location_name": result["name"],
+        "latitude": result["latitude"],
+        "longitude": result["longitude"],
+        "admin1": result.get("admin1", ""),
+        "country": result.get("country", ""),
+    }
+
+
 def get_weather(settings):
     latitude = settings.get("latitude")
     longitude = settings.get("longitude")
-    if not latitude or not longitude:
+    if latitude in {None, ""} or longitude in {None, ""}:
         return {
             "configured": False,
-            "summary": "请先在设置中填写所在位置的经纬度。",
+            "summary": "请先填写城市名，或点击“使用当前位置”。",
         }
 
     query = urlencode(
@@ -87,4 +138,3 @@ def get_weather(settings):
             "rain_probability": rain_probability,
         },
     }
-

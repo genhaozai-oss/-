@@ -9,6 +9,10 @@
 <body>
   <div class="ambient ambient-one"></div>
   <div class="ambient ambient-two"></div>
+  <div id="sceneBanner" class="scene-banner" role="status" aria-live="polite">
+    <strong>欢迎回家</strong>
+    <span>家里的环境和设备已经为你检查完毕。</span>
+  </div>
   <main class="shell">
     <header class="topbar">
       <div>
@@ -77,12 +81,11 @@
           </div>
           <span class="weather-symbol">☁</span>
         </div>
-        <p id="weatherSummary" class="weather-summary">填写经纬度后获取实时天气。</p>
+        <p id="weatherSummary" class="weather-summary">填写城市名，或一键使用当前位置。</p>
         <form id="locationForm" class="location-form">
-          <input id="locationName" placeholder="城市名，如广州" aria-label="城市名">
-          <input id="latitude" type="number" step="any" placeholder="纬度" aria-label="纬度" required>
-          <input id="longitude" type="number" step="any" placeholder="经度" aria-label="经度" required>
-          <button>保存位置</button>
+          <input id="locationName" placeholder="城市名，如广州" aria-label="城市名" required>
+          <button>按城市获取天气</button>
+          <button type="button" id="useCurrentLocationButton">使用当前位置</button>
         </form>
       </article>
     </section>

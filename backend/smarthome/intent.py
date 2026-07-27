@@ -90,8 +90,14 @@ def rename_device(message, selected_device_id=None):
                 "actions": [],
             }
         new_name = clean_name(selected_match.group(1))
+        current_device = database.get_device(selected_device_id)
+        inferred_room = database.infer_room_from_name(new_name)
         try:
-            device = database.update_device(selected_device_id, name=new_name)
+            device = database.update_device(
+                selected_device_id,
+                name=new_name,
+                room=inferred_room or (current_device or {}).get("room"),
+            )
         except sqlite3.IntegrityError:
             return {
                 "intent": "rename_device",
@@ -124,8 +130,13 @@ def rename_device(message, selected_device_id=None):
             "reply": f"没有唯一找到“{old_name}”，请先在设备列表中选中它。",
             "actions": [],
         }
+    inferred_room = database.infer_room_from_name(new_name)
     try:
-        device = database.update_device(matches[0]["id"], name=new_name)
+        device = database.update_device(
+            matches[0]["id"],
+            name=new_name,
+            room=inferred_room or matches[0]["room"],
+        )
     except sqlite3.IntegrityError:
         return {
             "intent": "rename_device",

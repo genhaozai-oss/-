@@ -334,6 +334,46 @@ def test_agent_learns_new_capability_for_selected_device(app, client):
     assert capability["learned"] == 1
 
 
+def test_agent_rename_synchronizes_room_from_new_name(app, client):
+    fake = FakeDynamicToolLlm(
+        "rename_device",
+        '{"device_name":"客厅灯","new_name":"厕所灯"}',
+        "记住了，客厅灯现在叫厕所灯。",
+    )
+    app.extensions["assistant_agent"] = SmartHomeAgent(fake)
+
+    result = client.post(
+        "/api/chat",
+        json={"message": "把客厅灯改名为厕所灯", "session_id": "rename-room"},
+    ).get_json()
+
+    assert result["actions"][0]["room"] == "厕所"
+    with app.app_context():
+        assert database.get_device("light-1")["room"] == "厕所"
+
+
+def test_agent_can_update_selected_device_location(app, client):
+    fake = FakeDynamicToolLlm(
+        "update_device_location",
+        '{"device_name":"这个设备","room":"书房"}',
+        "已记住，这个设备在书房。",
+    )
+    app.extensions["assistant_agent"] = SmartHomeAgent(fake)
+
+    result = client.post(
+        "/api/chat",
+        json={
+            "message": "这个设备放在书房",
+            "selected_device_id": "fan-1",
+            "session_id": "device-location",
+        },
+    ).get_json()
+
+    assert result["intent"] == "update_device_location"
+    with app.app_context():
+        assert database.get_device("fan-1")["room"] == "书房"
+
+
 def test_agent_isolates_conversation_sessions(app, client):
     fake = FakeConversationLlm()
     app.extensions["assistant_agent"] = SmartHomeAgent(fake)
