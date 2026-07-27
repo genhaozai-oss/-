@@ -1,5 +1,6 @@
 import io
 
+from smarthome import database
 from smarthome.agent import SmartHomeAgent
 
 
@@ -140,6 +141,36 @@ class FakeRetryToolLlm:
         }
 
 
+class FakeDynamicToolLlm:
+    enabled = True
+    model = "test-model"
+
+    def __init__(self, name, arguments, reply):
+        self.name = name
+        self.arguments = arguments
+        self.reply = reply
+        self.calls = 0
+
+    def chat(self, _messages, **options):
+        self.calls += 1
+        if options.get("tools"):
+            return {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "dynamic-call",
+                        "type": "function",
+                        "function": {
+                            "name": self.name,
+                            "arguments": self.arguments,
+                        },
+                    }
+                ],
+            }
+        return {"role": "assistant", "content": self.reply}
+
+
 def test_unknown_text_can_use_validated_llm_plan(app, client):
     app.extensions["llm_interpreter"] = FakeLlm()
     result = client.post(
@@ -241,7 +272,66 @@ def test_agent_retries_with_tool_when_action_request_returns_only_text(app, clie
     assert fake.calls == 3
     assert result["actions"][0]["device_id"] == "fan-1"
     assert result["actions"][0]["state"] == "on"
-    assert result["reply"] == "已打开客厅风扇。"
+    assert "调高风速" in result["reply"]
+
+
+def test_agent_adjusts_registered_device_capability(app, client):
+    fake = FakeDynamicToolLlm(
+        "set_device_level",
+        '{"device_name":"客厅风扇","capability":"speed","value":70}',
+        "已将客厅风扇风速调到70%。",
+    )
+    app.extensions["assistant_agent"] = SmartHomeAgent(fake)
+
+    result = client.post(
+        "/api/chat",
+        json={"message": "把风速调到70%", "session_id": "level-session"},
+    ).get_json()
+
+    assert result["intent"] == "set_device_level"
+    assert result["actions"][0]["capability"] == "speed"
+    assert result["actions"][0]["value"] == 70
+
+
+def test_agent_remembers_user_preference(app, client):
+    fake = FakeDynamicToolLlm(
+        "remember_preference",
+        '{"preference":"fan_speed","value":60}',
+        "记住了，你常用60%风速。",
+    )
+    app.extensions["assistant_agent"] = SmartHomeAgent(fake)
+
+    result = client.post(
+        "/api/chat",
+        json={"message": "记住我的常用风速是60%", "session_id": "preference-session"},
+    ).get_json()
+
+    assert result["intent"] == "remember_preference"
+    with app.app_context():
+        assert database.get_user_preferences()["fan_speed"] == "60"
+
+
+def test_agent_learns_new_capability_for_selected_device(app, client):
+    fake = FakeDynamicToolLlm(
+        "remember_device_capability",
+        '{"device_name":"这个设备","capability":"position"}',
+        "已记住这个设备支持位置调节。",
+    )
+    app.extensions["assistant_agent"] = SmartHomeAgent(fake)
+
+    result = client.post(
+        "/api/chat",
+        json={
+            "message": "记住，这个设备以后支持位置调节",
+            "selected_device_id": "light-1",
+            "session_id": "capability-memory-session",
+        },
+    ).get_json()
+
+    assert result["intent"] == "remember_device_capability"
+    with app.app_context():
+        capability = database.get_device_capability("light-1", "position")
+    assert capability["learned"] == 1
 
 
 def test_agent_isolates_conversation_sessions(app, client):

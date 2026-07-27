@@ -61,6 +61,7 @@ function renderDevices(devices) {
         <small>${device.room || "未分配房间"} · ${device.is_virtual ? "安全模拟" : "实体设备"}</small>
       </span>
       <button class="switch ${device.state === "on" ? "on" : ""}" aria-label="切换设备"></button>
+      <div class="device-capabilities"></div>
     `;
     element.querySelector("strong").textContent = device.name;
     element.addEventListener("click", () => {
@@ -80,6 +81,48 @@ function renderDevices(devices) {
         showToast(error.message);
       }
     });
+    const capabilityContainer = element.querySelector(".device-capabilities");
+    for (const capability of device.capabilities || []) {
+      const control = document.createElement("label");
+      control.className = "capability-control";
+      control.innerHTML = `
+        <span></span>
+        <output></output>
+        <input type="range">
+      `;
+      control.querySelector("span").textContent = capability.display_name;
+      const output = control.querySelector("output");
+      const updateOutput = (value) => {
+        output.textContent = `${Number(value).toFixed(
+          capability.step < 1 ? 1 : 0,
+        )}${capability.unit}`;
+      };
+      const input = control.querySelector("input");
+      input.min = capability.minimum;
+      input.max = capability.maximum;
+      input.step = capability.step;
+      input.value = capability.value;
+      updateOutput(input.value);
+      input.addEventListener("click", (event) => event.stopPropagation());
+      input.addEventListener("input", () => updateOutput(input.value));
+      input.addEventListener("change", async () => {
+        try {
+          await api(
+            `/api/devices/${device.id}/capabilities/${capability.capability}`,
+            {
+              method: "PATCH",
+              body: JSON.stringify({ value: Number(input.value) }),
+            },
+          );
+          showToast(`${device.name}${capability.display_name}已更新`);
+          await refreshState();
+        } catch (error) {
+          showToast(error.message);
+          await refreshState();
+        }
+      });
+      capabilityContainer.append(control);
+    }
     container.append(element);
   }
 }

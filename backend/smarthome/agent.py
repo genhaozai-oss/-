@@ -3,7 +3,7 @@ import sqlite3
 from datetime import datetime
 
 from . import database
-from .devices import set_device_state
+from .devices import set_device_capability, set_device_state
 from .home import run_home_arrival
 from .intent import parse_alarm_time
 from .weather import get_weather
@@ -36,6 +36,82 @@ TOOLS = [
                     },
                 },
                 "required": ["device_name", "state"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_device_level",
+            "description": "调节设备已注册的数值能力，例如风速、亮度、窗帘位置或目标温度。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "device_name": {"type": "string"},
+                    "capability": {
+                        "type": "string",
+                        "enum": [
+                            "speed",
+                            "brightness",
+                            "position",
+                            "target_temperature",
+                        ],
+                    },
+                    "value": {"type": "number"},
+                },
+                "required": ["device_name", "capability", "value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remember_device_capability",
+            "description": (
+                "仅当用户明确说明某个已登记设备支持某种能力时，"
+                "把该能力持久注册到设备。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "device_name": {
+                        "type": "string",
+                        "description": "当前名称；用户说这个或它时可填写这个设备。",
+                    },
+                    "capability": {
+                        "type": "string",
+                        "enum": [
+                            "speed",
+                            "brightness",
+                            "position",
+                            "target_temperature",
+                        ],
+                    },
+                },
+                "required": ["capability"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remember_preference",
+            "description": "仅当用户明确表达长期偏好或要求记住时，持久保存常用设置。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "preference": {
+                        "type": "string",
+                        "enum": [
+                            "fan_speed",
+                            "light_brightness",
+                            "temperature",
+                            "humidity",
+                        ],
+                    },
+                    "value": {"type": "number"},
+                },
+                "required": ["preference", "value"],
             },
         },
     },
@@ -116,6 +192,12 @@ ACTION_REQUEST_HINTS = (
     "叫做",
     "命名",
     "改名",
+    "风速",
+    "亮度",
+    "调到",
+    "调成",
+    "记住我的",
+    "以后默认",
 )
 OPERATION_CLAIMS = (
     "已打开",
@@ -144,11 +226,12 @@ class SmartHomeAgent:
 
         devices = database.list_devices()
         selected = database.get_device(selected_device_id) if selected_device_id else None
+        preferences = database.get_user_preferences()
         history = database.list_conversation_messages(session_id)
         messages = [
             {
                 "role": "system",
-                "content": self._system_prompt(devices, selected),
+                "content": self._system_prompt(devices, selected, preferences),
             },
             *history,
             {"role": "user", "content": message},
@@ -224,17 +307,27 @@ class SmartHomeAgent:
             if final
             else self._fallback_reply(outputs)
         )
-        if not reply or not self._reply_matches_capabilities(reply):
+        if not reply:
             reply = self._fallback_reply(outputs)
         result = self._build_result(outputs, reply)
         self._remember(session_id, message, result["reply"])
         return result
 
     @staticmethod
-    def _system_prompt(devices, selected):
-        device_text = "；".join(
-            f"{device['name']}（{device['type']}，{device['state']}）"
-            for device in devices
+    def _system_prompt(devices, selected, preferences):
+        device_descriptions = []
+        for device in devices:
+            capability_text = "、".join(
+                f"{item['capability']}={item['value']:g}{item['unit']}"
+                for item in device["capabilities"]
+            )
+            suffix = f"，能力：{capability_text}" if capability_text else ""
+            device_descriptions.append(
+                f"{device['name']}（{device['type']}，{device['state']}{suffix}）"
+            )
+        device_text = "；".join(device_descriptions)
+        preference_text = "、".join(
+            f"{name}={value}" for name, value in preferences.items()
         )
         selected_text = selected["name"] if selected else "无"
         now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %A")
@@ -244,13 +337,15 @@ class SmartHomeAgent:
             "只能操作工具列出的已登记设备；名称不明确时应请用户说清楚。"
             "风扇属于送风降温设备；用户说热、想凉快时应开启已登记的风扇，"
             "加湿器和抽湿器只调节湿度，灯光也不能降温。"
-            "当前设备都只有打开和关闭能力，不支持风速、温度或亮度档位调节，"
-            "不要声称或建议执行未登记的能力。"
+            "设备能力来自动态注册表，只能调节该设备已经注册的能力。"
+            "用户明确告诉你设备支持新能力时调用记忆工具；"
+            "用户表达长期偏好时调用偏好工具，后续相关操作主动采用已记住偏好。"
             "禁止建议裸线接水或直接接触220V市电，高风险设备只做安全模拟。"
             "结合最近对话理解“它”“刚才那个”等指代，回复通常不超过三句话。"
             f"\n当前时间：{now}"
             f"\n已登记设备：{device_text or '无'}"
             f"\n网页当前选中设备：{selected_text}"
+            f"\n已记住的用户偏好：{preference_text or '无'}"
         )
 
     @staticmethod
@@ -277,6 +372,11 @@ class SmartHomeAgent:
         handlers = {
             "get_home_state": self._get_home_state,
             "control_device": self._control_device,
+            "set_device_level": self._set_device_level,
+            "remember_device_capability": lambda args: (
+                self._remember_device_capability(args, selected_device_id)
+            ),
+            "remember_preference": self._remember_preference,
             "run_home_arrival": self._run_home_arrival,
             "get_weather": self._get_weather,
             "create_alarm": self._create_alarm,
@@ -354,6 +454,140 @@ class SmartHomeAgent:
             "message": f"已{verb}{updated['name']}。",
             "device": updated,
             "actions": [action],
+        }
+
+    @staticmethod
+    def _set_device_level(arguments):
+        name = str(arguments.get("device_name", "")).strip()
+        capability_name = str(arguments.get("capability", "")).strip()
+        try:
+            value = float(arguments["value"])
+        except (KeyError, TypeError, ValueError):
+            return SmartHomeAgent._failure(
+                "set_device_level", "能力值必须是数字。"
+            )
+        matches = database.find_devices(name)
+        if not matches:
+            return SmartHomeAgent._failure(
+                "set_device_level", f"没有找到“{name}”。"
+            )
+        if len(matches) > 1:
+            return SmartHomeAgent._failure(
+                "set_device_level", "设备名称不唯一，请说出完整名称。"
+            )
+        device = matches[0]
+        registered = database.get_device_capability(
+            device["id"], capability_name
+        )
+        if not registered:
+            return SmartHomeAgent._failure(
+                "set_device_level",
+                f"{device['name']}尚未注册 {capability_name} 能力。",
+            )
+        try:
+            updated = set_device_capability(
+                device["id"], capability_name, value
+            )
+        except ValueError as exc:
+            return SmartHomeAgent._failure("set_device_level", str(exc))
+        action = {
+            "device_id": device["id"],
+            "device_name": device["name"],
+            "capability": capability_name,
+            "value": updated["value"],
+            "unit": updated["unit"],
+            "is_virtual": bool(device["is_virtual"]),
+        }
+        message = (
+            f"已将{device['name']}的{updated['display_name']}调到"
+            f"{updated['value']:g}{updated['unit']}。"
+        )
+        database.log_event("device", message, action)
+        return {
+            "ok": True,
+            "intent": "set_device_level",
+            "message": message,
+            "capability": updated,
+            "actions": [action],
+        }
+
+    @staticmethod
+    def _remember_device_capability(arguments, selected_device_id):
+        current_name = str(arguments.get("device_name", "")).strip()
+        capability_name = str(arguments.get("capability", "")).strip()
+        selected_words = {"", "这个", "它", "这个设备", "选中的设备"}
+        if current_name in selected_words and selected_device_id:
+            device = database.get_device(selected_device_id)
+            matches = [device] if device else []
+        else:
+            matches = database.find_devices(current_name) if current_name else []
+        if len(matches) != 1:
+            return SmartHomeAgent._failure(
+                "remember_device_capability",
+                "没有唯一找到设备，请先在网页中选中或说出完整名称。",
+            )
+        capability = database.register_device_capability(
+            matches[0]["id"],
+            capability_name,
+            learned=True,
+        )
+        if not capability:
+            return SmartHomeAgent._failure(
+                "remember_device_capability", "这种能力暂时不在安全接口范围内。"
+            )
+        message = (
+            f"已记住{matches[0]['name']}支持"
+            f"{capability['display_name']}调节。"
+        )
+        database.log_event("memory", message, capability)
+        return {
+            "ok": True,
+            "intent": "remember_device_capability",
+            "message": message,
+            "capability": capability,
+            "actions": [],
+        }
+
+    @staticmethod
+    def _remember_preference(arguments):
+        preference = str(arguments.get("preference", "")).strip()
+        ranges = {
+            "fan_speed": (0, 100, "%"),
+            "light_brightness": (0, 100, "%"),
+            "temperature": (16, 30, "℃"),
+            "humidity": (30, 80, "%"),
+        }
+        if preference not in ranges:
+            return SmartHomeAgent._failure(
+                "remember_preference", "这种偏好暂时不支持。"
+            )
+        try:
+            value = float(arguments["value"])
+        except (KeyError, TypeError, ValueError):
+            return SmartHomeAgent._failure(
+                "remember_preference", "偏好值必须是数字。"
+            )
+        minimum, maximum, unit = ranges[preference]
+        if not minimum <= value <= maximum:
+            return SmartHomeAgent._failure(
+                "remember_preference",
+                f"偏好值应在 {minimum}～{maximum}{unit} 之间。",
+            )
+        preferences = database.set_user_preference(preference, f"{value:g}")
+        labels = {
+            "fan_speed": "常用风速",
+            "light_brightness": "常用亮度",
+            "temperature": "舒适温度",
+            "humidity": "舒适湿度",
+        }
+        message = f"已记住你的{labels[preference]}是 {value:g}{unit}。"
+        database.log_event("memory", message, {"preferences": preferences})
+        return {
+            "ok": True,
+            "intent": "remember_preference",
+            "message": message,
+            "preferences": preferences,
+            "actions": [],
         }
 
     @staticmethod
@@ -455,16 +689,6 @@ class SmartHomeAgent:
     def _fallback_reply(outputs):
         messages = [output["message"] for output in outputs if output.get("message")]
         return " ".join(messages) or "操作已经处理，但云端暂时没有生成回复。"
-
-    @staticmethod
-    def _reply_matches_capabilities(reply):
-        if any(term in reply for term in ("风速", "亮度", "温度档位")):
-            return False
-        if "降温" in reply and any(
-            device in reply for device in ("加湿器", "抽湿器", "灯光")
-        ):
-            return False
-        return True
 
     def _build_result(self, outputs, reply):
         intents = [output.get("intent") for output in outputs if output.get("intent")]

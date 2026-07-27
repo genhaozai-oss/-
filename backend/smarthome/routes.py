@@ -6,7 +6,7 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify, request, send_from_directory
 
 from . import database
-from .devices import set_device_state
+from .devices import set_device_capability, set_device_state
 from .home import run_comfort_rules, run_home_arrival
 from .intent import handle_message
 from .weather import get_weather
@@ -274,6 +274,28 @@ def update_device(device_id):
         return error("设备不存在。", 404)
     database.log_event("device", f"更新设备：{device['name']}", device)
     return jsonify({"device": device})
+
+
+@api.patch("/api/devices/<device_id>/capabilities/<capability>")
+def update_capability(device_id, capability):
+    payload = request.get_json(silent=True) or {}
+    if "value" not in payload:
+        return error("请提供要设置的能力值。")
+    try:
+        value = float(payload["value"])
+        updated = set_device_capability(device_id, capability, value)
+    except (TypeError, ValueError) as exc:
+        return error(str(exc) or "能力值必须是数字。")
+    if not database.get_device(device_id):
+        return error("设备不存在。", 404)
+    if not updated:
+        return error("该设备尚未注册这个能力。", 409)
+    database.log_event(
+        "device",
+        f"调节{database.get_device(device_id)['name']}的{updated['display_name']}",
+        updated,
+    )
+    return jsonify({"capability": updated})
 
 
 @api.get("/api/weather")

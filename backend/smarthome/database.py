@@ -56,6 +56,20 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 
 CREATE INDEX IF NOT EXISTS idx_conversation_session
 ON conversation_messages(session_id, id);
+
+CREATE TABLE IF NOT EXISTS device_capabilities (
+    device_id TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    value REAL NOT NULL,
+    minimum REAL NOT NULL,
+    maximum REAL NOT NULL,
+    step REAL NOT NULL,
+    unit TEXT NOT NULL DEFAULT '',
+    learned INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (device_id, capability)
+);
 """
 
 
@@ -64,6 +78,46 @@ SEED_DEVICES = (
     ("humidifier-1", "加湿器", "humidifier", "客厅", 1),
     ("dehumidifier-1", "抽湿器演示", "dehumidifier", "客厅", 1),
     ("light-1", "客厅灯", "light", "客厅", 1),
+)
+
+CAPABILITY_DEFINITIONS = {
+    "speed": {
+        "display_name": "风速",
+        "minimum": 0,
+        "maximum": 100,
+        "step": 10,
+        "unit": "%",
+        "default": 50,
+    },
+    "brightness": {
+        "display_name": "亮度",
+        "minimum": 0,
+        "maximum": 100,
+        "step": 10,
+        "unit": "%",
+        "default": 100,
+    },
+    "position": {
+        "display_name": "位置",
+        "minimum": 0,
+        "maximum": 100,
+        "step": 10,
+        "unit": "%",
+        "default": 0,
+    },
+    "target_temperature": {
+        "display_name": "目标温度",
+        "minimum": 16,
+        "maximum": 30,
+        "step": 1,
+        "unit": "℃",
+        "default": 26,
+    },
+}
+
+SEED_CAPABILITIES = (
+    ("fan-1", "speed"),
+    ("light-1", "brightness"),
 )
 
 
@@ -104,6 +158,27 @@ def init_db():
         """,
         (timestamp,),
     )
+    for device_id, capability in SEED_CAPABILITIES:
+        definition = CAPABILITY_DEFINITIONS[capability]
+        db.execute(
+            """
+            INSERT OR IGNORE INTO device_capabilities
+                (device_id, capability, display_name, value, minimum, maximum,
+                 step, unit, learned, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+            """,
+            (
+                device_id,
+                capability,
+                definition["display_name"],
+                definition["default"],
+                definition["minimum"],
+                definition["maximum"],
+                definition["step"],
+                definition["unit"],
+                timestamp,
+            ),
+        )
     db.commit()
 
 
@@ -119,14 +194,135 @@ def list_devices():
     rows = get_db().execute(
         "SELECT * FROM devices ORDER BY room, name"
     ).fetchall()
-    return rows_to_dicts(rows)
+    devices = rows_to_dicts(rows)
+    capabilities = list_device_capabilities()
+    by_device = {}
+    for capability in capabilities:
+        by_device.setdefault(capability["device_id"], []).append(capability)
+    for device in devices:
+        device["capabilities"] = by_device.get(device["id"], [])
+    return devices
 
 
 def get_device(device_id):
     row = get_db().execute(
         "SELECT * FROM devices WHERE id = ?", (device_id,)
     ).fetchone()
+    if not row:
+        return None
+    device = dict(row)
+    device["capabilities"] = list_device_capabilities(device_id)
+    return device
+
+
+def list_device_capabilities(device_id=None):
+    if device_id is None:
+        rows = get_db().execute(
+            """
+            SELECT * FROM device_capabilities
+            ORDER BY device_id, capability
+            """
+        ).fetchall()
+    else:
+        rows = get_db().execute(
+            """
+            SELECT * FROM device_capabilities
+            WHERE device_id = ?
+            ORDER BY capability
+            """,
+            (device_id,),
+        ).fetchall()
+    return rows_to_dicts(rows)
+
+
+def get_device_capability(device_id, capability):
+    row = get_db().execute(
+        """
+        SELECT * FROM device_capabilities
+        WHERE device_id = ? AND capability = ?
+        """,
+        (device_id, capability),
+    ).fetchone()
     return dict(row) if row else None
+
+
+def register_device_capability(device_id, capability, learned=True):
+    device = get_device(device_id)
+    definition = CAPABILITY_DEFINITIONS.get(capability)
+    if not device or not definition:
+        return None
+    db = get_db()
+    db.execute(
+        """
+        INSERT INTO device_capabilities
+            (device_id, capability, display_name, value, minimum, maximum,
+             step, unit, learned, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(device_id, capability) DO UPDATE SET
+            learned = MAX(device_capabilities.learned, excluded.learned),
+            updated_at = excluded.updated_at
+        """,
+        (
+            device_id,
+            capability,
+            definition["display_name"],
+            definition["default"],
+            definition["minimum"],
+            definition["maximum"],
+            definition["step"],
+            definition["unit"],
+            int(learned),
+            now_iso(),
+        ),
+    )
+    db.commit()
+    return get_device_capability(device_id, capability)
+
+
+def update_device_capability(device_id, capability, value):
+    registered = get_device_capability(device_id, capability)
+    if not registered:
+        return None
+    numeric_value = float(value)
+    if not registered["minimum"] <= numeric_value <= registered["maximum"]:
+        raise ValueError(
+            f"{registered['display_name']}应在 "
+            f"{registered['minimum']:g}～{registered['maximum']:g}"
+            f"{registered['unit']} 之间。"
+        )
+    stepped_value = round(
+        (numeric_value - registered["minimum"]) / registered["step"]
+    ) * registered["step"] + registered["minimum"]
+    db = get_db()
+    db.execute(
+        """
+        UPDATE device_capabilities
+        SET value = ?, updated_at = ?
+        WHERE device_id = ? AND capability = ?
+        """,
+        (stepped_value, now_iso(), device_id, capability),
+    )
+    db.commit()
+    return get_device_capability(device_id, capability)
+
+
+def get_user_preferences():
+    rows = get_db().execute(
+        """
+        SELECT key, value FROM settings
+        WHERE key LIKE 'preference.%'
+        ORDER BY key
+        """
+    ).fetchall()
+    return {
+        row["key"].removeprefix("preference."): row["value"]
+        for row in rows
+    }
+
+
+def set_user_preference(name, value):
+    set_settings({f"preference.{name}": value})
+    return get_user_preferences()
 
 
 def find_devices(query):

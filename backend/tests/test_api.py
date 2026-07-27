@@ -12,6 +12,10 @@ def test_initial_state_contains_simulated_devices(client):
     assert state["environment"]["temperature"] == 27.0
     assert len(state["devices"]) == 4
     assert all(device["is_virtual"] for device in state["devices"])
+    fan = next(device for device in state["devices"] if device["id"] == "fan-1")
+    light = next(device for device in state["devices"] if device["id"] == "light-1")
+    assert fan["capabilities"][0]["capability"] == "speed"
+    assert light["capabilities"][0]["capability"] == "brightness"
 
 
 def test_text_command_controls_fan(client):
@@ -118,6 +122,55 @@ def test_invalid_environment_is_rejected(client):
         json={"temperature": 26, "humidity": 130},
     )
     assert response.status_code == 400
+
+
+def test_device_capability_can_be_adjusted(client):
+    response = client.patch(
+        "/api/devices/fan-1/capabilities/speed",
+        json={"value": 73},
+    )
+    assert response.status_code == 200
+    capability = response.get_json()["capability"]
+    assert capability["value"] == 70
+
+    fan = next(
+        device
+        for device in client.get("/api/state").get_json()["devices"]
+        if device["id"] == "fan-1"
+    )
+    assert fan["capabilities"][0]["value"] == 70
+
+
+def test_unregistered_capability_is_rejected(client):
+    response = client.patch(
+        "/api/devices/fan-1/capabilities/brightness",
+        json={"value": 50},
+    )
+    assert response.status_code == 409
+
+    response = client.patch(
+        "/api/devices/fan-1/capabilities/speed",
+        json={"value": 130},
+    )
+    assert response.status_code == 400
+
+
+def test_saved_preference_is_applied_when_device_turns_on(app, client):
+    with app.app_context():
+        from smarthome import database
+
+        database.set_user_preference("fan_speed", "60")
+
+    client.post("/api/chat", json={"message": "打开客厅风扇"})
+    fan = next(
+        device
+        for device in client.get("/api/state").get_json()["devices"]
+        if device["id"] == "fan-1"
+    )
+    speed = next(
+        item for item in fan["capabilities"] if item["capability"] == "speed"
+    )
+    assert speed["value"] == 60
 
 
 def test_voice_endpoint_returns_clear_install_message(app, client):

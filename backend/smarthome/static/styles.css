@@ -379,6 +379,36 @@ h1 span {
   font-size: 11px;
 }
 
+.device-capabilities {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 8px;
+}
+
+.device-capabilities:empty {
+  display: none;
+}
+
+.capability-control {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 5px 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.capability-control output {
+  color: var(--sage-dark);
+  font-weight: 700;
+}
+
+.capability-control input {
+  width: 100%;
+  grid-column: 1 / -1;
+  accent-color: var(--sage-dark);
+}
+
 .switch {
   position: relative;
   width: 42px;

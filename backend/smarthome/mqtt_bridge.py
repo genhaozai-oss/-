@@ -56,6 +56,17 @@ class MqttBridge:
         )
         return info.rc == mqtt.MQTT_ERR_SUCCESS
 
+    def publish_device_capability(self, device_id, capability, value):
+        if not self.connected:
+            return False
+        info = self.client.publish(
+            f"smarthome/device/{device_id}/capability/{capability}/set",
+            payload=str(value),
+            qos=1,
+            retain=False,
+        )
+        return info.rc == mqtt.MQTT_ERR_SUCCESS
+
     def _on_connect(self, client, _userdata, _flags, reason_code, _properties):
         if reason_code != 0:
             return
@@ -64,6 +75,7 @@ class MqttBridge:
             [
                 (ENVIRONMENT_TOPIC, 1),
                 ("smarthome/device/+/state", 1),
+                ("smarthome/device/+/capability/+/state", 1),
                 (CONTROLLER_STATUS_TOPIC, 1),
             ]
         )
@@ -119,6 +131,19 @@ class MqttBridge:
 
     def _handle_device_state(self, topic, payload):
         parts = topic.split("/")
+        if (
+            len(parts) == 6
+            and parts[3] == "capability"
+            and parts[5] == "state"
+        ):
+            capability = database.update_device_capability(
+                parts[2],
+                parts[4],
+                float(payload),
+            )
+            if not capability:
+                raise ValueError("设备能力尚未注册")
+            return
         if len(parts) != 4 or parts[3] != "state":
             return
         state = payload.strip().lower()
