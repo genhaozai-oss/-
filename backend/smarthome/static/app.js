@@ -102,6 +102,7 @@ function renderDevices(devices) {
       input.max = capability.maximum;
       input.step = capability.step;
       input.value = capability.value;
+      input.ariaLabel = `${device.name}${capability.display_name}`;
       updateOutput(input.value);
       input.addEventListener("click", (event) => event.stopPropagation());
       input.addEventListener("input", () => updateOutput(input.value));
