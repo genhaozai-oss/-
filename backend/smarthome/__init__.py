@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 from flask import Flask
+from dotenv import load_dotenv
 
 from . import database
 from .agent import SmartHomeAgent
@@ -12,6 +13,9 @@ from .voice import SpeechRecognizer
 
 
 def create_app(test_config=None):
+    backend_dir = Path(__file__).resolve().parents[1]
+    load_dotenv(backend_dir / ".env", override=False)
+
     app = Flask(__name__, static_folder="static", static_url_path="")
     default_db = Path(app.instance_path) / "smarthome.db"
     app.config.from_mapping(
