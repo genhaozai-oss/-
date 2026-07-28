@@ -27,6 +27,15 @@ def test_index_includes_persistent_automation_manager(client):
     assert "/api/automations/" in script
 
 
+def test_index_includes_custom_scene_manager(client):
+    html = client.get("/").get_data(as_text=True)
+    script = client.get("/app.js").get_data(as_text=True)
+
+    assert 'id="sceneList"' in html
+    assert "我的场景" in html
+    assert "/api/scenes/" in script
+
+
 def test_initial_state_contains_simulated_devices(client):
     state = client.get("/api/state").get_json()
     assert state["environment"]["temperature"] == 27.0

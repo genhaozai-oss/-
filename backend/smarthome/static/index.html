@@ -126,10 +126,22 @@
           <button type="button" id="voiceReplyButton" aria-pressed="false">语音播报：关</button>
           <button data-message="室内温湿度怎么样">查询环境</button>
           <button data-message="以后湿度超过70%就自动打开抽湿器演示">添加自动化</button>
+          <button data-message="记住睡眠模式：关掉灯，把风扇调到30%">记住场景</button>
           <button data-message="明天早上七点设置闹钟">设置闹钟</button>
           <button data-message="今天天气怎么样">查询天气</button>
         </div>
       </article>
+    </section>
+
+    <section class="card scenes-card">
+      <div class="card-heading">
+        <div>
+          <p class="card-kicker">生活模式记忆</p>
+          <h3>我的场景</h3>
+        </div>
+        <span class="hint">场景保存在本地，执行时不消耗 AI Token</span>
+      </div>
+      <div id="sceneList" class="scene-list"></div>
     </section>
 
     <section class="card alarms-card">

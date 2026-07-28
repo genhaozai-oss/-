@@ -350,6 +350,69 @@ function renderAutomations(automations) {
   }
 }
 
+function renderScenes(scenes) {
+  const container = document.querySelector("#sceneList");
+  container.replaceChildren();
+  if (!scenes.length) {
+    container.innerHTML =
+      '<p class="empty-state">还没有自定义场景，可以说“记住睡眠模式：关灯，风扇调到30%”。</p>';
+    return;
+  }
+  for (const scene of scenes) {
+    const element = document.createElement("article");
+    element.className = "custom-scene";
+
+    const icon = document.createElement("span");
+    icon.className = "scene-icon";
+    icon.textContent = "◇";
+    const text = document.createElement("span");
+    const title = document.createElement("strong");
+    title.textContent = scene.name;
+    const detail = document.createElement("small");
+    detail.textContent = scene.description;
+    text.append(title, detail);
+
+    const controls = document.createElement("div");
+    controls.className = "scene-controls";
+    const run = document.createElement("button");
+    run.textContent = "运行";
+    run.ariaLabel = `运行${scene.name}`;
+    run.addEventListener("click", async () => {
+      try {
+        const result = await api(`/api/scenes/${scene.id}/run`, {
+          method: "POST",
+        });
+        const message = result.errors.length
+          ? `场景执行完成，但有提示：${result.errors.join(" ")}`
+          : result.actions.length
+            ? `已执行“${scene.name}”场景，共 ${result.actions.length} 个动作。`
+            : `“${scene.name}”场景中的设备已经是目标状态。`;
+        addMessage(message, "assistant");
+        speakAssistant(message);
+        showToast(`已运行${scene.name}`);
+        await refreshState();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+    const remove = document.createElement("button");
+    remove.textContent = "删除";
+    remove.ariaLabel = `删除${scene.name}`;
+    remove.addEventListener("click", async () => {
+      try {
+        await api(`/api/scenes/${scene.id}`, { method: "DELETE" });
+        showToast(`已删除${scene.name}`);
+        await refreshState();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+    controls.append(run, remove);
+    element.append(icon, text, controls);
+    container.append(element);
+  }
+}
+
 async function refreshWeather(settings) {
   if (settings.latitude == null || settings.longitude == null) return;
   document.querySelector("#locationTitle").textContent = settings.location_name || "当前位置";
@@ -376,6 +439,7 @@ async function refreshState() {
   renderDevices(data.devices);
   renderAlarms(data.alarms);
   renderAutomations(data.automations || []);
+  renderScenes(data.scenes || []);
   refreshWeather(data.settings);
 
   const dueAlarmMessages = [];

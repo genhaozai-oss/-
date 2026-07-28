@@ -84,6 +84,14 @@ CREATE TABLE IF NOT EXISTS automation_rules (
     last_triggered_at TEXT,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS custom_scenes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    actions TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -481,6 +489,69 @@ def automation_managed_device_ids():
         """
     ).fetchall()
     return {row["device_id"] for row in rows}
+
+
+def save_scene(name, actions):
+    timestamp = now_iso()
+    db = get_db()
+    db.execute(
+        """
+        INSERT INTO custom_scenes (name, actions, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(name) DO UPDATE SET
+            actions = excluded.actions,
+            updated_at = excluded.updated_at
+        """,
+        (
+            name,
+            json.dumps(actions, ensure_ascii=False),
+            timestamp,
+            timestamp,
+        ),
+    )
+    db.commit()
+    return get_scene_by_name(name)
+
+
+def _decode_scene(row):
+    if not row:
+        return None
+    scene = dict(row)
+    scene["actions"] = json.loads(scene["actions"])
+    return scene
+
+
+def get_scene(scene_id):
+    row = get_db().execute(
+        "SELECT * FROM custom_scenes WHERE id = ?",
+        (scene_id,),
+    ).fetchone()
+    return _decode_scene(row)
+
+
+def get_scene_by_name(name):
+    row = get_db().execute(
+        "SELECT * FROM custom_scenes WHERE name = ?",
+        (name,),
+    ).fetchone()
+    return _decode_scene(row)
+
+
+def list_scenes():
+    rows = get_db().execute(
+        "SELECT * FROM custom_scenes ORDER BY updated_at DESC, id DESC"
+    ).fetchall()
+    return [_decode_scene(row) for row in rows]
+
+
+def delete_scene(scene_id):
+    db = get_db()
+    cursor = db.execute(
+        "DELETE FROM custom_scenes WHERE id = ?",
+        (scene_id,),
+    )
+    db.commit()
+    return cursor.rowcount > 0
 
 
 def find_devices(query):

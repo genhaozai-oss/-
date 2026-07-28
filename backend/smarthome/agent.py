@@ -7,6 +7,7 @@ from .automations import create_rule
 from .devices import set_device_capability, set_device_state
 from .home import run_home_arrival
 from .intent import parse_alarm_time
+from .scenes import run_scene, save_scene
 from .weather import get_weather
 
 
@@ -165,6 +166,63 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "save_scene",
+            "description": (
+                "当用户明确要求记住、创建或更新一个生活模式时，"
+                "把一个或多个设备动作保存为可重复执行的场景。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "actions": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 8,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "device_name": {"type": "string"},
+                                "action": {
+                                    "type": "string",
+                                    "enum": ["on", "off", "set_level"],
+                                },
+                                "capability": {
+                                    "type": "string",
+                                    "enum": [
+                                        "speed",
+                                        "brightness",
+                                        "position",
+                                        "target_temperature",
+                                    ],
+                                },
+                                "value": {"type": "number"},
+                            },
+                            "required": ["device_name", "action"],
+                        },
+                    },
+                },
+                "required": ["name", "actions"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_scene",
+            "description": "执行已经保存的自定义生活场景或模式。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_home_arrival",
             "description": "执行用户准备回家场景，检查环境并自动联动设备。",
             "parameters": {"type": "object", "properties": {}},
@@ -278,6 +336,9 @@ ACTION_REQUEST_HINTS = (
     "超过",
     "高于",
     "低于",
+    "场景",
+    "模式",
+    "执行",
 )
 OPERATION_CLAIMS = (
     "已打开",
@@ -307,11 +368,14 @@ class SmartHomeAgent:
         devices = database.list_devices()
         selected = database.get_device(selected_device_id) if selected_device_id else None
         preferences = database.get_user_preferences()
+        scenes = database.list_scenes()
         history = database.list_conversation_messages(session_id)
         messages = [
             {
                 "role": "system",
-                "content": self._system_prompt(devices, selected, preferences),
+                "content": self._system_prompt(
+                    devices, selected, preferences, scenes
+                ),
             },
             *history,
             {"role": "user", "content": message},
@@ -394,7 +458,7 @@ class SmartHomeAgent:
         return result
 
     @staticmethod
-    def _system_prompt(devices, selected, preferences):
+    def _system_prompt(devices, selected, preferences, scenes):
         device_descriptions = []
         for device in devices:
             capability_text = "、".join(
@@ -411,6 +475,7 @@ class SmartHomeAgent:
             f"{name}={value}" for name, value in preferences.items()
         )
         selected_text = selected["name"] if selected else "无"
+        scene_text = "、".join(scene["name"] for scene in scenes)
         now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %A")
         return (
             "你是“栖居”，一个温暖、简洁、可靠的中文家庭智能管理助手。"
@@ -422,6 +487,8 @@ class SmartHomeAgent:
             "用户明确告诉你设备支持新能力时调用记忆工具；"
             "用户表达长期偏好时调用偏好工具，后续相关操作主动采用已记住偏好。"
             "用户要求以后根据温湿度自动控制设备时，必须调用自动化规则工具；"
+            "用户明确要求记住多个设备动作时调用保存场景工具；"
+            "用户要求执行已保存模式时调用执行场景工具，不能假装执行。"
             "给设备改名时，如果新名称包含房间（如厕所灯、厨房风扇），"
             "必须同时更新设备房间；用户说明设备放在哪里时调用位置工具。"
             "禁止建议裸线接水或直接接触220V市电，高风险设备只做安全模拟。"
@@ -431,6 +498,7 @@ class SmartHomeAgent:
             f"\n已登记设备：{device_text or '无'}"
             f"\n网页当前选中设备：{selected_text}"
             f"\n已记住的用户偏好：{preference_text or '无'}"
+            f"\n已保存的自定义场景：{scene_text or '无'}"
         )
 
     @staticmethod
@@ -465,6 +533,10 @@ class SmartHomeAgent:
             "create_automation": lambda args: self._create_automation(
                 args, selected_device_id
             ),
+            "save_scene": lambda args: self._save_scene(
+                args, selected_device_id
+            ),
+            "run_scene": self._run_scene,
             "run_home_arrival": self._run_home_arrival,
             "get_weather": self._get_weather,
             "create_alarm": self._create_alarm,
@@ -696,6 +768,42 @@ class SmartHomeAgent:
         }
 
     @staticmethod
+    def _save_scene(arguments, selected_device_id):
+        try:
+            scene = save_scene(arguments, selected_device_id)
+        except ValueError as exc:
+            return SmartHomeAgent._failure("save_scene", str(exc))
+        return {
+            "ok": True,
+            "intent": "save_scene",
+            "message": (
+                f"已记住“{scene['name']}”场景："
+                f"{scene['description']}。"
+            ),
+            "scene": scene,
+            "actions": [],
+        }
+
+    @staticmethod
+    def _run_scene(arguments):
+        name = str(arguments.get("name", "")).strip()
+        try:
+            result = run_scene(name=name)
+        except ValueError as exc:
+            return SmartHomeAgent._failure("run_scene", str(exc))
+        message = f"已执行“{result['scene']['name']}”场景。"
+        if result["errors"]:
+            message += " ".join(result["errors"])
+        elif not result["actions"]:
+            message += "设备当前已经符合场景设置。"
+        return {
+            "ok": not result["errors"],
+            "intent": "run_scene",
+            "message": message,
+            **result,
+        }
+
+    @staticmethod
     def _run_home_arrival(_arguments):
         result = run_home_arrival()
         weather = get_weather(database.get_settings())
@@ -856,7 +964,13 @@ class SmartHomeAgent:
             ],
             "ai": {"provider": "cloud", "model": self.llm.model},
         }
-        for key in ("environment", "weather", "alarm", "automation"):
+        for key in (
+            "environment",
+            "weather",
+            "alarm",
+            "automation",
+            "scene",
+        ):
             value = next(
                 (output[key] for output in reversed(outputs) if key in output),
                 None,

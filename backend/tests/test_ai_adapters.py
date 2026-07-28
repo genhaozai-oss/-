@@ -496,6 +496,49 @@ def test_agent_creates_persistent_environment_automation(app, client):
         assert database.list_automation_rules()[0]["device_id"] == "dehumidifier-1"
 
 
+def test_agent_saves_and_runs_custom_scene(app, client):
+    save_fake = FakeDynamicToolLlm(
+        "save_scene",
+        (
+            '{"name":"睡眠模式","actions":['
+            '{"device_name":"客厅灯","action":"off"},'
+            '{"device_name":"客厅风扇","action":"set_level",'
+            '"capability":"speed","value":30}]}'
+        ),
+        "睡眠模式已经记住了。",
+    )
+    app.extensions["assistant_agent"] = SmartHomeAgent(save_fake)
+    saved = client.post(
+        "/api/chat",
+        json={
+            "message": "记住睡眠模式，关灯并把风扇调到30%",
+            "session_id": "scene-save",
+        },
+    ).get_json()
+
+    assert saved["intent"] == "save_scene"
+    assert saved["scene"]["name"] == "睡眠模式"
+
+    run_fake = FakeDynamicToolLlm(
+        "run_scene",
+        '{"name":"睡眠模式"}',
+        "睡眠模式已执行。",
+    )
+    app.extensions["assistant_agent"] = SmartHomeAgent(run_fake)
+    executed = client.post(
+        "/api/chat",
+        json={
+            "message": "执行睡眠模式",
+            "session_id": "scene-run",
+        },
+    ).get_json()
+
+    assert executed["intent"] == "run_scene"
+    assert any(action.get("state") == "on" for action in executed["actions"])
+    with app.app_context():
+        assert database.get_device_capability("fan-1", "speed")["value"] == 30
+
+
 def test_agent_learns_new_capability_for_selected_device(app, client):
     fake = FakeDynamicToolLlm(
         "remember_device_capability",

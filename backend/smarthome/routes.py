@@ -10,6 +10,11 @@ from .automations import create_rule, list_rules
 from .devices import set_device_capability, set_device_state
 from .home import run_comfort_rules, run_home_arrival
 from .intent import handle_message
+from .scenes import (
+    list_scenes as list_custom_scenes,
+    run_scene,
+    save_scene,
+)
 from .tts import SpeechSynthesisError
 from .voice import SpeechRecognitionError
 from .weather import geocode_location, get_weather
@@ -26,6 +31,39 @@ def error(message, status=400):
 def normalize_session_id(value):
     value = str(value or "").strip()
     return value if SESSION_ID_PATTERN.fullmatch(value) else "default"
+
+
+def run_saved_scene_from_message(message):
+    normalized = str(message or "").strip()
+    if not any(
+        hint in normalized
+        for hint in ("执行", "运行", "开启", "启动", "进入")
+    ):
+        return None
+    matches = [
+        scene
+        for scene in database.list_scenes()
+        if scene["name"] in normalized
+    ]
+    if len(matches) != 1:
+        return None
+    if any(word in normalized for word in ("不要", "别", "取消")):
+        return {
+            "intent": "scene_cancelled",
+            "reply": f"好的，不执行“{matches[0]['name']}”场景。",
+            "actions": [],
+        }
+    result = run_scene(scene_id=matches[0]["id"])
+    reply = f"已执行“{result['scene']['name']}”场景。"
+    if result["errors"]:
+        reply += " ".join(result["errors"])
+    elif not result["actions"]:
+        reply += "设备当前已经符合场景设置。"
+    return {
+        "intent": "run_scene",
+        "reply": reply,
+        **result,
+    }
 
 
 def apply_llm_plan(plan):
@@ -81,6 +119,9 @@ def apply_llm_plan(plan):
 
 
 def process_message(message, selected_device_id=None, session_id="default"):
+    scene_result = run_saved_scene_from_message(message)
+    if scene_result:
+        return scene_result
     result = handle_message(message, selected_device_id)
     automation_request = (
         any(sensor in message for sensor in ("温度", "湿度"))
@@ -186,6 +227,7 @@ def state():
             "settings": database.get_settings(),
             "events": database.list_events(8),
             "automations": list_rules(),
+            "scenes": list_custom_scenes(),
         }
     )
 
@@ -352,6 +394,32 @@ def update_automation(rule_id):
 def delete_automation(rule_id):
     if not database.delete_automation_rule(rule_id):
         return error("自动化规则不存在。", 404)
+    return "", 204
+
+
+@api.post("/api/scenes")
+def create_custom_scene():
+    payload = request.get_json(silent=True) or {}
+    try:
+        scene = save_scene(payload, payload.get("selected_device_id"))
+    except ValueError as exc:
+        return error(str(exc))
+    return jsonify({"scene": scene}), 201
+
+
+@api.post("/api/scenes/<int:scene_id>/run")
+def run_custom_scene(scene_id):
+    try:
+        result = run_scene(scene_id=scene_id)
+    except ValueError as exc:
+        return error(str(exc), 404)
+    return jsonify(result)
+
+
+@api.delete("/api/scenes/<int:scene_id>")
+def delete_custom_scene(scene_id):
+    if not database.delete_scene(scene_id):
+        return error("场景不存在。", 404)
     return "", 204
 
 

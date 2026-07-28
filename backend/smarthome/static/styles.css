@@ -626,6 +626,62 @@ h1 span {
   margin-top: 24px;
 }
 
+.scenes-card {
+  margin-top: 24px;
+}
+
+.scene-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.custom-scene {
+  display: grid;
+  grid-template-columns: 42px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.scene-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 13px;
+  color: white;
+  background: var(--sage-dark);
+}
+
+.custom-scene strong,
+.custom-scene small {
+  display: block;
+}
+
+.custom-scene small {
+  margin-top: 4px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.scene-controls {
+  display: grid;
+  gap: 6px;
+}
+
+.scene-controls button {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--sage-dark);
+  background: white;
+}
+
 .automation-list {
   display: grid;
   gap: 12px;
@@ -780,7 +836,8 @@ h1 span {
 
   .device-list,
   .simulator,
-  .location-form {
+  .location-form,
+  .scene-list {
     grid-template-columns: 1fr;
   }
 
