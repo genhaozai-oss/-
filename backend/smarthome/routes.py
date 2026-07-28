@@ -10,6 +10,7 @@ from .automations import create_rule, list_rules
 from .devices import set_device_capability, set_device_state
 from .home import run_comfort_rules, run_home_arrival
 from .intent import handle_message
+from .preferences import forget_preference, list_preferences
 from .scenes import (
     list_scenes as list_custom_scenes,
     run_scene,
@@ -228,6 +229,7 @@ def state():
             "events": database.list_events(8),
             "automations": list_rules(),
             "scenes": list_custom_scenes(),
+            "memories": list_preferences(),
         }
     )
 
@@ -420,6 +422,25 @@ def run_custom_scene(scene_id):
 def delete_custom_scene(scene_id):
     if not database.delete_scene(scene_id):
         return error("场景不存在。", 404)
+    return "", 204
+
+
+@api.get("/api/memories")
+def memories():
+    return jsonify({"memories": list_preferences()})
+
+
+@api.delete("/api/memories/<preference>")
+def delete_memory(preference):
+    try:
+        label = forget_preference(preference)
+    except ValueError as exc:
+        return error(str(exc), 404)
+    database.log_event(
+        "memory",
+        f"删除记忆：{label}",
+        {"preference": preference, "deleted": True},
+    )
     return "", 204
 
 

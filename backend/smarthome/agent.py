@@ -7,6 +7,11 @@ from .automations import create_rule
 from .devices import set_device_capability, set_device_state
 from .home import run_home_arrival
 from .intent import parse_alarm_time
+from .preferences import (
+    forget_preference,
+    list_preferences,
+    remember_preference,
+)
 from .scenes import run_scene, save_scene
 from .weather import get_weather
 
@@ -114,6 +119,28 @@ TOOLS = [
                     "value": {"type": "number"},
                 },
                 "required": ["preference", "value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "forget_preference",
+            "description": "删除用户明确要求忘记的一项长期偏好。仅删除指定项。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "preference": {
+                        "type": "string",
+                        "enum": [
+                            "fan_speed",
+                            "light_brightness",
+                            "temperature",
+                            "humidity",
+                        ],
+                    },
+                },
+                "required": ["preference"],
             },
         },
     },
@@ -339,6 +366,9 @@ ACTION_REQUEST_HINTS = (
     "场景",
     "模式",
     "执行",
+    "忘掉",
+    "忘记",
+    "删除记忆",
 )
 OPERATION_CLAIMS = (
     "已打开",
@@ -486,6 +516,7 @@ class SmartHomeAgent:
             "设备能力来自动态注册表，只能调节该设备已经注册的能力。"
             "用户明确告诉你设备支持新能力时调用记忆工具；"
             "用户表达长期偏好时调用偏好工具，后续相关操作主动采用已记住偏好。"
+            "用户明确要求忘记某项偏好时调用遗忘工具，不能假装删除。"
             "用户要求以后根据温湿度自动控制设备时，必须调用自动化规则工具；"
             "用户明确要求记住多个设备动作时调用保存场景工具；"
             "用户要求执行已保存模式时调用执行场景工具，不能假装执行。"
@@ -530,6 +561,7 @@ class SmartHomeAgent:
                 self._remember_device_capability(args, selected_device_id)
             ),
             "remember_preference": self._remember_preference,
+            "forget_preference": self._forget_preference,
             "create_automation": lambda args: self._create_automation(
                 args, selected_device_id
             ),
@@ -714,42 +746,42 @@ class SmartHomeAgent:
     @staticmethod
     def _remember_preference(arguments):
         preference = str(arguments.get("preference", "")).strip()
-        ranges = {
-            "fan_speed": (0, 100, "%"),
-            "light_brightness": (0, 100, "%"),
-            "temperature": (16, 30, "℃"),
-            "humidity": (30, 80, "%"),
-        }
-        if preference not in ranges:
-            return SmartHomeAgent._failure(
-                "remember_preference", "这种偏好暂时不支持。"
-            )
         try:
-            value = float(arguments["value"])
-        except (KeyError, TypeError, ValueError):
-            return SmartHomeAgent._failure(
-                "remember_preference", "偏好值必须是数字。"
-            )
-        minimum, maximum, unit = ranges[preference]
-        if not minimum <= value <= maximum:
-            return SmartHomeAgent._failure(
-                "remember_preference",
-                f"偏好值应在 {minimum}～{maximum}{unit} 之间。",
-            )
-        preferences = database.set_user_preference(preference, f"{value:g}")
-        labels = {
-            "fan_speed": "常用风速",
-            "light_brightness": "常用亮度",
-            "temperature": "舒适温度",
-            "humidity": "舒适湿度",
-        }
-        message = f"已记住你的{labels[preference]}是 {value:g}{unit}。"
-        database.log_event("memory", message, {"preferences": preferences})
+            memory = remember_preference(preference, arguments.get("value"))
+        except ValueError as exc:
+            return SmartHomeAgent._failure("remember_preference", str(exc))
+        message = (
+            f"已记住你的{memory['label']}是 "
+            f"{memory['display_value']}。"
+        )
+        database.log_event("memory", message, {"memory": memory})
         return {
             "ok": True,
             "intent": "remember_preference",
             "message": message,
-            "preferences": preferences,
+            "memory": memory,
+            "memories": list_preferences(),
+            "actions": [],
+        }
+
+    @staticmethod
+    def _forget_preference(arguments):
+        preference = str(arguments.get("preference", "")).strip()
+        try:
+            label = forget_preference(preference)
+        except ValueError as exc:
+            return SmartHomeAgent._failure("forget_preference", str(exc))
+        message = f"已忘记你的{label}。"
+        database.log_event(
+            "memory",
+            message,
+            {"preference": preference, "deleted": True},
+        )
+        return {
+            "ok": True,
+            "intent": "forget_preference",
+            "message": message,
+            "memories": list_preferences(),
             "actions": [],
         }
 
@@ -970,6 +1002,8 @@ class SmartHomeAgent:
             "alarm",
             "automation",
             "scene",
+            "memories",
+            "memory",
         ):
             value = next(
                 (output[key] for output in reversed(outputs) if key in output),

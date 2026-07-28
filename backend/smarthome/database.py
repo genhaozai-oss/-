@@ -391,6 +391,16 @@ def set_user_preference(name, value):
     return get_user_preferences()
 
 
+def delete_user_preference(name):
+    db = get_db()
+    cursor = db.execute(
+        "DELETE FROM settings WHERE key = ?",
+        (f"preference.{name}",),
+    )
+    db.commit()
+    return cursor.rowcount > 0
+
+
 def create_automation_rule(
     sensor,
     operator,

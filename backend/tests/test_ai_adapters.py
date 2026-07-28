@@ -471,6 +471,30 @@ def test_agent_remembers_user_preference(app, client):
         assert database.get_user_preferences()["fan_speed"] == "60"
 
 
+def test_agent_forgets_only_requested_preference(app, client):
+    with app.app_context():
+        database.set_user_preference("fan_speed", "60")
+        database.set_user_preference("humidity", "55")
+    fake = FakeDynamicToolLlm(
+        "forget_preference",
+        '{"preference":"fan_speed"}',
+        "已忘记你的常用风速。",
+    )
+    app.extensions["assistant_agent"] = SmartHomeAgent(fake)
+
+    result = client.post(
+        "/api/chat",
+        json={
+            "message": "忘掉我的常用风速",
+            "session_id": "forget-preference",
+        },
+    ).get_json()
+
+    assert result["intent"] == "forget_preference"
+    with app.app_context():
+        assert database.get_user_preferences() == {"humidity": "55"}
+
+
 def test_agent_creates_persistent_environment_automation(app, client):
     fake = FakeDynamicToolLlm(
         "create_automation",

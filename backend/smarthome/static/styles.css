@@ -742,6 +742,90 @@ h1 span {
   background: white;
 }
 
+.insights-grid {
+  margin-top: 24px;
+}
+
+.memory-list,
+.event-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.memory-item,
+.event-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 13px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.memory-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 11px;
+  color: white;
+  background: var(--sage-dark);
+  font-size: 12px;
+}
+
+.memory-item strong,
+.memory-item small,
+.event-item strong,
+.event-item small {
+  display: block;
+}
+
+.memory-item small,
+.event-item small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.memory-item button {
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: white;
+}
+
+.event-item {
+  grid-template-columns: auto 1fr;
+}
+
+.event-kind {
+  min-width: 42px;
+  padding: 5px 7px;
+  border-radius: 8px;
+  color: white;
+  background: var(--sage-dark);
+  font-size: 10px;
+  text-align: center;
+}
+
+.event-kind.sensor {
+  background: #7b9fa7;
+}
+
+.event-kind.automation,
+.event-kind.scene {
+  background: #c18a73;
+}
+
+.event-item strong {
+  margin-bottom: 3px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .empty-state {
   color: var(--muted);
   font-size: 13px;

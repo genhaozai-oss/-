@@ -413,6 +413,76 @@ function renderScenes(scenes) {
   }
 }
 
+function renderMemories(memories) {
+  const container = document.querySelector("#memoryList");
+  container.replaceChildren();
+  if (!memories.length) {
+    container.innerHTML =
+      '<p class="empty-state">还没有长期偏好，可以说“记住我的常用风速是60%”。</p>';
+    return;
+  }
+  for (const memory of memories) {
+    const element = document.createElement("div");
+    element.className = "memory-item";
+    const icon = document.createElement("span");
+    icon.className = "memory-icon";
+    icon.textContent = "忆";
+    const text = document.createElement("span");
+    const label = document.createElement("small");
+    label.textContent = memory.label;
+    const value = document.createElement("strong");
+    value.textContent = memory.display_value;
+    text.append(label, value);
+    const remove = document.createElement("button");
+    remove.textContent = "忘记";
+    remove.ariaLabel = `忘记${memory.label}`;
+    remove.addEventListener("click", async () => {
+      try {
+        await api(`/api/memories/${memory.name}`, { method: "DELETE" });
+        showToast(`已忘记${memory.label}`);
+        await refreshState();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+    element.append(icon, text, remove);
+    container.append(element);
+  }
+}
+
+function renderEvents(events) {
+  const container = document.querySelector("#eventList");
+  container.replaceChildren();
+  if (!events.length) {
+    container.innerHTML =
+      '<p class="empty-state">系统运行后，设备操作和自动决策会记录在这里。</p>';
+    return;
+  }
+  const kindLabels = {
+    automation: "自动化",
+    scene: "场景",
+    sensor: "环境",
+    device: "设备",
+    memory: "记忆",
+    alarm: "闹钟",
+  };
+  for (const event of events) {
+    const element = document.createElement("div");
+    element.className = "event-item";
+    const kind = document.createElement("span");
+    kind.className = `event-kind ${event.kind}`;
+    kind.textContent = kindLabels[event.kind] || "系统";
+    const text = document.createElement("span");
+    const message = document.createElement("strong");
+    message.textContent = event.message;
+    const time = document.createElement("small");
+    time.textContent = new Date(event.created_at).toLocaleString("zh-CN");
+    text.append(message, time);
+    element.append(kind, text);
+    container.append(element);
+  }
+}
+
 async function refreshWeather(settings) {
   if (settings.latitude == null || settings.longitude == null) return;
   document.querySelector("#locationTitle").textContent = settings.location_name || "当前位置";
@@ -440,6 +510,8 @@ async function refreshState() {
   renderAlarms(data.alarms);
   renderAutomations(data.automations || []);
   renderScenes(data.scenes || []);
+  renderMemories(data.memories || []);
+  renderEvents(data.events || []);
   refreshWeather(data.settings);
 
   const dueAlarmMessages = [];

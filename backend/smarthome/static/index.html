@@ -127,6 +127,7 @@
           <button data-message="室内温湿度怎么样">查询环境</button>
           <button data-message="以后湿度超过70%就自动打开抽湿器演示">添加自动化</button>
           <button data-message="记住睡眠模式：关掉灯，把风扇调到30%">记住场景</button>
+          <button data-message="记住我的常用风速是60%">记住偏好</button>
           <button data-message="明天早上七点设置闹钟">设置闹钟</button>
           <button data-message="今天天气怎么样">查询天气</button>
         </div>
@@ -163,6 +164,30 @@
         <span class="hint">直接对助手说“温度超过29度，把风扇调到80%”</span>
       </div>
       <div id="automationList" class="automation-list"></div>
+    </section>
+
+    <section class="content-grid insights-grid">
+      <article class="card memory-card">
+        <div class="card-heading">
+          <div>
+            <p class="card-kicker">可控长期记忆</p>
+            <h3>AI 记忆中心</h3>
+          </div>
+          <span class="hint">只保存在本地，可逐条删除</span>
+        </div>
+        <div id="memoryList" class="memory-list"></div>
+      </article>
+
+      <article class="card decision-card">
+        <div class="card-heading">
+          <div>
+            <p class="card-kicker">本地可解释记录</p>
+            <h3>系统决策</h3>
+          </div>
+          <span class="hint">最近 8 条状态与动作</span>
+        </div>
+        <div id="eventList" class="event-list"></div>
+      </article>
     </section>
   </main>
   <div id="toast" class="toast" role="status"></div>
