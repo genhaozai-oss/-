@@ -471,6 +471,31 @@ def test_agent_remembers_user_preference(app, client):
         assert database.get_user_preferences()["fan_speed"] == "60"
 
 
+def test_agent_creates_persistent_environment_automation(app, client):
+    fake = FakeDynamicToolLlm(
+        "create_automation",
+        (
+            '{"sensor":"humidity","operator":"above","threshold":70,'
+            '"device_name":"抽湿器演示","action":"on"}'
+        ),
+        "已记住，湿度高于70%时自动打开抽湿器演示。",
+    )
+    app.extensions["assistant_agent"] = SmartHomeAgent(fake)
+
+    result = client.post(
+        "/api/chat",
+        json={
+            "message": "以后湿度超过70%就自动打开抽湿器",
+            "session_id": "automation-session",
+        },
+    ).get_json()
+
+    assert result["intent"] == "create_automation"
+    assert result["automation"]["threshold"] == 70
+    with app.app_context():
+        assert database.list_automation_rules()[0]["device_id"] == "dehumidifier-1"
+
+
 def test_agent_learns_new_capability_for_selected_device(app, client):
     fake = FakeDynamicToolLlm(
         "remember_device_capability",

@@ -3,6 +3,7 @@ import sqlite3
 from datetime import datetime
 
 from . import database
+from .automations import create_rule
 from .devices import set_device_capability, set_device_state
 from .home import run_home_arrival
 from .intent import parse_alarm_time
@@ -118,6 +119,52 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "create_automation",
+            "description": (
+                "当用户要求以后在温度或湿度达到某个条件时自动控制设备，"
+                "创建一条长期保存的自动化规则。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sensor": {
+                        "type": "string",
+                        "enum": ["temperature", "humidity"],
+                    },
+                    "operator": {
+                        "type": "string",
+                        "enum": ["above", "below"],
+                    },
+                    "threshold": {"type": "number"},
+                    "device_name": {"type": "string"},
+                    "action": {
+                        "type": "string",
+                        "enum": ["on", "off", "set_level"],
+                    },
+                    "capability": {
+                        "type": "string",
+                        "enum": [
+                            "speed",
+                            "brightness",
+                            "position",
+                            "target_temperature",
+                        ],
+                    },
+                    "value": {"type": "number"},
+                },
+                "required": [
+                    "sensor",
+                    "operator",
+                    "threshold",
+                    "device_name",
+                    "action",
+                ],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_home_arrival",
             "description": "执行用户准备回家场景，检查环境并自动联动设备。",
             "parameters": {"type": "object", "properties": {}},
@@ -226,6 +273,11 @@ ACTION_REQUEST_HINTS = (
     "调成",
     "记住我的",
     "以后默认",
+    "自动",
+    "如果",
+    "超过",
+    "高于",
+    "低于",
 )
 OPERATION_CLAIMS = (
     "已打开",
@@ -369,10 +421,12 @@ class SmartHomeAgent:
             "设备能力来自动态注册表，只能调节该设备已经注册的能力。"
             "用户明确告诉你设备支持新能力时调用记忆工具；"
             "用户表达长期偏好时调用偏好工具，后续相关操作主动采用已记住偏好。"
+            "用户要求以后根据温湿度自动控制设备时，必须调用自动化规则工具；"
             "给设备改名时，如果新名称包含房间（如厕所灯、厨房风扇），"
             "必须同时更新设备房间；用户说明设备放在哪里时调用位置工具。"
             "禁止建议裸线接水或直接接触220V市电，高风险设备只做安全模拟。"
             "结合最近对话理解“它”“刚才那个”等指代，回复通常不超过三句话。"
+            "回复使用简洁纯文本，不使用Markdown标记。"
             f"\n当前时间：{now}"
             f"\n已登记设备：{device_text or '无'}"
             f"\n网页当前选中设备：{selected_text}"
@@ -408,6 +462,9 @@ class SmartHomeAgent:
                 self._remember_device_capability(args, selected_device_id)
             ),
             "remember_preference": self._remember_preference,
+            "create_automation": lambda args: self._create_automation(
+                args, selected_device_id
+            ),
             "run_home_arrival": self._run_home_arrival,
             "get_weather": self._get_weather,
             "create_alarm": self._create_alarm,
@@ -625,6 +682,20 @@ class SmartHomeAgent:
         }
 
     @staticmethod
+    def _create_automation(arguments, selected_device_id):
+        try:
+            rule = create_rule(arguments, selected_device_id)
+        except ValueError as exc:
+            return SmartHomeAgent._failure("create_automation", str(exc))
+        return {
+            "ok": True,
+            "intent": "create_automation",
+            "message": f"已记住自动化规则：{rule['description']}。",
+            "automation": rule,
+            "actions": [],
+        }
+
+    @staticmethod
     def _run_home_arrival(_arguments):
         result = run_home_arrival()
         weather = get_weather(database.get_settings())
@@ -785,7 +856,7 @@ class SmartHomeAgent:
             ],
             "ai": {"provider": "cloud", "model": self.llm.model},
         }
-        for key in ("environment", "weather", "alarm"):
+        for key in ("environment", "weather", "alarm", "automation"):
             value = next(
                 (output[key] for output in reversed(outputs) if key in output),
                 None,

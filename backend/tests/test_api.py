@@ -18,6 +18,15 @@ def test_index_includes_optional_chinese_voice_reply(client):
     assert "/api/voice/synthesize" in script
 
 
+def test_index_includes_persistent_automation_manager(client):
+    html = client.get("/").get_data(as_text=True)
+    script = client.get("/app.js").get_data(as_text=True)
+
+    assert 'id="automationList"' in html
+    assert "我的自动化" in html
+    assert "/api/automations/" in script
+
+
 def test_initial_state_contains_simulated_devices(client):
     state = client.get("/api/state").get_json()
     assert state["environment"]["temperature"] == 27.0

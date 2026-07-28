@@ -163,11 +163,19 @@ function showSceneBanner() {
   );
 }
 
+function cleanAssistantText(text) {
+  return String(text)
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/(^|\n)#{1,6}\s+/g, "$1")
+    .replace(/`([^`]+)`/g, "$1");
+}
+
 function addMessage(text, role) {
   const messages = document.querySelector("#messages");
   const element = document.createElement("div");
   element.className = `message ${role}-message`;
-  element.textContent = text;
+  element.textContent =
+    role === "assistant" ? cleanAssistantText(text) : text;
   messages.append(element);
   messages.scrollTop = messages.scrollHeight;
 }
@@ -280,6 +288,68 @@ function renderAlarms(alarms) {
   }
 }
 
+function renderAutomations(automations) {
+  const container = document.querySelector("#automationList");
+  container.replaceChildren();
+  if (!automations.length) {
+    container.innerHTML =
+      '<p class="empty-state">还没有自定义规则，可以对助手说“湿度超过70%就自动打开抽湿器”。</p>';
+    return;
+  }
+  for (const automation of automations) {
+    const element = document.createElement("article");
+    element.className = `automation-rule${automation.enabled ? "" : " disabled"}`;
+
+    const condition = document.createElement("div");
+    condition.className = "automation-condition";
+    const status = document.createElement("span");
+    status.className = "automation-status";
+    status.textContent = automation.enabled ? "自动" : "暂停";
+    const text = document.createElement("span");
+    const title = document.createElement("strong");
+    title.textContent = automation.description;
+    const detail = document.createElement("small");
+    detail.textContent = automation.last_triggered_at
+      ? `最近执行：${new Date(automation.last_triggered_at).toLocaleString("zh-CN")}`
+      : "尚未触发";
+    text.append(title, detail);
+    condition.append(status, text);
+
+    const controls = document.createElement("div");
+    controls.className = "automation-controls";
+    const toggle = document.createElement("button");
+    toggle.textContent = automation.enabled ? "暂停" : "启用";
+    toggle.ariaLabel = `${toggle.textContent}自动化`;
+    toggle.addEventListener("click", async () => {
+      try {
+        await api(`/api/automations/${automation.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ enabled: !Boolean(automation.enabled) }),
+        });
+        showToast(automation.enabled ? "自动化已暂停" : "自动化已启用");
+        await refreshState();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+    const remove = document.createElement("button");
+    remove.textContent = "删除";
+    remove.ariaLabel = "删除自动化";
+    remove.addEventListener("click", async () => {
+      try {
+        await api(`/api/automations/${automation.id}`, { method: "DELETE" });
+        showToast("自动化已删除");
+        await refreshState();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+    controls.append(toggle, remove);
+    element.append(condition, controls);
+    container.append(element);
+  }
+}
+
 async function refreshWeather(settings) {
   if (settings.latitude == null || settings.longitude == null) return;
   document.querySelector("#locationTitle").textContent = settings.location_name || "当前位置";
@@ -305,6 +375,7 @@ async function refreshState() {
   document.querySelector("#humidityInput").value = data.environment.humidity;
   renderDevices(data.devices);
   renderAlarms(data.alarms);
+  renderAutomations(data.automations || []);
   refreshWeather(data.settings);
 
   const dueAlarmMessages = [];
@@ -521,14 +592,18 @@ document.querySelector("#homeSceneButton").addEventListener("click", () => {
 
 document.querySelector("#updateEnvironmentButton").addEventListener("click", async () => {
   try {
-    await api("/api/environment", {
+    const result = await api("/api/environment", {
       method: "POST",
       body: JSON.stringify({
         temperature: document.querySelector("#temperatureInput").value,
         humidity: document.querySelector("#humidityInput").value,
       }),
     });
-    showToast("环境数据已更新，并执行自动联动");
+    showToast(
+      result.actions.length
+        ? `环境已更新，自动执行了 ${result.actions.length} 个动作`
+        : "环境数据已更新，没有规则需要执行",
+    );
     await refreshState();
   } catch (error) {
     showToast(error.message);

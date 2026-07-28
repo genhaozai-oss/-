@@ -622,6 +622,70 @@ h1 span {
   background: transparent;
 }
 
+.automations-card {
+  margin-top: 24px;
+}
+
+.automation-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.automation-rule {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 15px 17px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.automation-rule.disabled {
+  opacity: 0.58;
+}
+
+.automation-condition {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+}
+
+.automation-condition strong,
+.automation-condition small {
+  display: block;
+}
+
+.automation-condition small {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.automation-status {
+  min-width: 44px;
+  padding: 6px 8px;
+  border-radius: 9px;
+  color: white;
+  background: var(--sage-dark);
+  font-size: 11px;
+  text-align: center;
+}
+
+.automation-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.automation-controls button {
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--sage-dark);
+  background: white;
+}
+
 .empty-state {
   color: var(--muted);
   font-size: 13px;
@@ -718,6 +782,15 @@ h1 span {
   .simulator,
   .location-form {
     grid-template-columns: 1fr;
+  }
+
+  .automation-rule {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .automation-controls button {
+    flex: 1;
   }
 
   .climate-values > div {

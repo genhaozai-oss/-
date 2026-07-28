@@ -70,6 +70,20 @@ CREATE TABLE IF NOT EXISTS device_capabilities (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (device_id, capability)
 );
+
+CREATE TABLE IF NOT EXISTS automation_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sensor TEXT NOT NULL,
+    operator TEXT NOT NULL,
+    threshold REAL NOT NULL,
+    device_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    capability TEXT NOT NULL DEFAULT '',
+    value REAL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_triggered_at TEXT,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -367,6 +381,106 @@ def get_user_preferences():
 def set_user_preference(name, value):
     set_settings({f"preference.{name}": value})
     return get_user_preferences()
+
+
+def create_automation_rule(
+    sensor,
+    operator,
+    threshold,
+    device_id,
+    action,
+    capability="",
+    value=None,
+):
+    db = get_db()
+    cursor = db.execute(
+        """
+        INSERT INTO automation_rules
+            (sensor, operator, threshold, device_id, action, capability,
+             value, enabled, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+        """,
+        (
+            sensor,
+            operator,
+            threshold,
+            device_id,
+            action,
+            capability,
+            value,
+            now_iso(),
+        ),
+    )
+    db.commit()
+    return get_automation_rule(cursor.lastrowid)
+
+
+def get_automation_rule(rule_id):
+    row = get_db().execute(
+        """
+        SELECT automation_rules.*, devices.name AS device_name
+        FROM automation_rules
+        LEFT JOIN devices ON devices.id = automation_rules.device_id
+        WHERE automation_rules.id = ?
+        """,
+        (rule_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_automation_rules(enabled_only=False):
+    where = "WHERE automation_rules.enabled = 1" if enabled_only else ""
+    rows = get_db().execute(
+        f"""
+        SELECT automation_rules.*, devices.name AS device_name
+        FROM automation_rules
+        LEFT JOIN devices ON devices.id = automation_rules.device_id
+        {where}
+        ORDER BY automation_rules.id DESC
+        """
+    ).fetchall()
+    return rows_to_dicts(rows)
+
+
+def update_automation_rule(rule_id, *, enabled=None, triggered=False):
+    rule = get_automation_rule(rule_id)
+    if not rule:
+        return None
+    db = get_db()
+    db.execute(
+        """
+        UPDATE automation_rules
+        SET enabled = ?, last_triggered_at = ?
+        WHERE id = ?
+        """,
+        (
+            int(enabled) if enabled is not None else rule["enabled"],
+            now_iso() if triggered else rule["last_triggered_at"],
+            rule_id,
+        ),
+    )
+    db.commit()
+    return get_automation_rule(rule_id)
+
+
+def delete_automation_rule(rule_id):
+    db = get_db()
+    cursor = db.execute(
+        "DELETE FROM automation_rules WHERE id = ?",
+        (rule_id,),
+    )
+    db.commit()
+    return cursor.rowcount > 0
+
+
+def automation_managed_device_ids():
+    rows = get_db().execute(
+        """
+        SELECT DISTINCT device_id FROM automation_rules
+        WHERE enabled = 1
+        """
+    ).fetchall()
+    return {row["device_id"] for row in rows}
 
 
 def find_devices(query):

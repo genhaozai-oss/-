@@ -1,4 +1,5 @@
 from . import database
+from .automations import run_rules
 from .devices import set_device_state
 
 
@@ -10,10 +11,14 @@ TYPE_LABELS = {
 }
 
 
-def set_type_state(device_type, state):
+def set_type_state(device_type, state, excluded_device_ids=None):
     actions = []
+    excluded_device_ids = excluded_device_ids or set()
     for device in database.list_devices():
-        if device["type"] != device_type:
+        if (
+            device["type"] != device_type
+            or device["id"] in excluded_device_ids
+        ):
             continue
         if device["state"] == state:
             continue
@@ -34,22 +39,24 @@ def run_comfort_rules():
     temperature = environment["temperature"]
     humidity = environment["humidity"]
     actions = []
+    managed = database.automation_managed_device_ids()
 
     if temperature >= 28:
-        actions.extend(set_type_state("fan", "on"))
+        actions.extend(set_type_state("fan", "on", managed))
     elif temperature <= 25:
-        actions.extend(set_type_state("fan", "off"))
+        actions.extend(set_type_state("fan", "off", managed))
 
     if humidity < 40:
-        actions.extend(set_type_state("dehumidifier", "off"))
-        actions.extend(set_type_state("humidifier", "on"))
+        actions.extend(set_type_state("dehumidifier", "off", managed))
+        actions.extend(set_type_state("humidifier", "on", managed))
     elif humidity > 70:
-        actions.extend(set_type_state("humidifier", "off"))
-        actions.extend(set_type_state("dehumidifier", "on"))
+        actions.extend(set_type_state("humidifier", "off", managed))
+        actions.extend(set_type_state("dehumidifier", "on", managed))
     elif 45 <= humidity <= 65:
-        actions.extend(set_type_state("humidifier", "off"))
-        actions.extend(set_type_state("dehumidifier", "off"))
+        actions.extend(set_type_state("humidifier", "off", managed))
+        actions.extend(set_type_state("dehumidifier", "off", managed))
 
+    actions.extend(run_rules(environment))
     return environment, actions
 
 

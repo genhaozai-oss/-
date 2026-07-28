@@ -125,6 +125,7 @@
         <div class="quick-commands">
           <button type="button" id="voiceReplyButton" aria-pressed="false">语音播报：关</button>
           <button data-message="室内温湿度怎么样">查询环境</button>
+          <button data-message="以后湿度超过70%就自动打开抽湿器演示">添加自动化</button>
           <button data-message="明天早上七点设置闹钟">设置闹钟</button>
           <button data-message="今天天气怎么样">查询天气</button>
         </div>
@@ -139,6 +140,17 @@
         </div>
       </div>
       <div id="alarmList" class="alarm-list"></div>
+    </section>
+
+    <section class="card automations-card">
+      <div class="card-heading">
+        <div>
+          <p class="card-kicker">本地策略引擎</p>
+          <h3>我的自动化</h3>
+        </div>
+        <span class="hint">直接对助手说“温度超过29度，把风扇调到80%”</span>
+      </div>
+      <div id="automationList" class="automation-list"></div>
     </section>
   </main>
   <div id="toast" class="toast" role="status"></div>

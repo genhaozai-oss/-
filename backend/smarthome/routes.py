@@ -6,6 +6,7 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify, request, send_from_directory
 
 from . import database
+from .automations import create_rule, list_rules
 from .devices import set_device_capability, set_device_state
 from .home import run_comfort_rules, run_home_arrival
 from .intent import handle_message
@@ -81,6 +82,17 @@ def apply_llm_plan(plan):
 
 def process_message(message, selected_device_id=None, session_id="default"):
     result = handle_message(message, selected_device_id)
+    automation_request = (
+        any(sensor in message for sensor in ("温度", "湿度"))
+        and any(
+            comparison in message
+            for comparison in ("超过", "高于", "低于", "少于")
+        )
+        and any(
+            action in message
+            for action in ("打开", "开启", "关闭", "关掉", "调到", "调成")
+        )
+    )
     if result["intent"] == "home_arrival":
         weather = get_weather(database.get_settings())
         result["weather"] = weather
@@ -97,7 +109,7 @@ def process_message(message, selected_device_id=None, session_id="default"):
             "weather": weather,
         }
 
-    if result["intent"] != "unknown":
+    if result["intent"] != "unknown" and not automation_request:
         return result
 
     assistant_agent = current_app.extensions["assistant_agent"]
@@ -173,6 +185,7 @@ def state():
             "due_alarms": database.due_alarms(),
             "settings": database.get_settings(),
             "events": database.list_events(8),
+            "automations": list_rules(),
         }
     )
 
@@ -309,6 +322,43 @@ def update_environment():
         {"environment": environment, "actions": actions},
     )
     return jsonify({"environment": environment, "actions": actions})
+
+
+@api.post("/api/automations")
+def create_automation():
+    payload = request.get_json(silent=True) or {}
+    try:
+        rule = create_rule(payload, payload.get("selected_device_id"))
+    except ValueError as exc:
+        return error(str(exc))
+    return jsonify({"automation": rule}), 201
+
+
+@api.patch("/api/automations/<int:rule_id>")
+def update_automation(rule_id):
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload.get("enabled"), bool):
+        return error("请提供有效的启用状态。")
+    rule = database.update_automation_rule(
+        rule_id,
+        enabled=payload["enabled"],
+    )
+    if not rule:
+        return error("自动化规则不存在。", 404)
+    return jsonify({"automation": list_rules_by_id(rule_id)})
+
+
+@api.delete("/api/automations/<int:rule_id>")
+def delete_automation(rule_id):
+    if not database.delete_automation_rule(rule_id):
+        return error("自动化规则不存在。", 404)
+    return "", 204
+
+
+def list_rules_by_id(rule_id):
+    return next(
+        rule for rule in list_rules() if rule["id"] == rule_id
+    )
 
 
 @api.patch("/api/devices/<device_id>")
