@@ -7,6 +7,17 @@ def test_health(client):
     assert response.get_json() == {"status": "ok"}
 
 
+def test_index_includes_optional_chinese_voice_reply(client):
+    html = client.get("/").get_data(as_text=True)
+    script = client.get("/app.js").get_data(as_text=True)
+
+    assert 'id="voiceReplyButton"' in html
+    assert "语音播报：关" in html
+    assert "speechSynthesis" in script
+    assert "SpeechSynthesisUtterance" in script
+    assert "/api/voice/synthesize" in script
+
+
 def test_initial_state_contains_simulated_devices(client):
     state = client.get("/api/state").get_json()
     assert state["environment"]["temperature"] == 27.0

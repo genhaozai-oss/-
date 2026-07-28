@@ -1,4 +1,5 @@
 const storedSessionId = window.localStorage.getItem("smarthome_session_id");
+const voiceReplyStorageKey = "smarthome_voice_reply_enabled";
 const sessionId =
   storedSessionId ||
   (window.crypto?.randomUUID?.() ??
@@ -9,6 +10,8 @@ const state = {
   selectedDeviceId: null,
   devices: [],
   weatherUpdatedAt: 0,
+  voiceReplyEnabled:
+    window.localStorage.getItem(voiceReplyStorageKey) === "1",
 };
 
 const icons = {
@@ -17,6 +20,9 @@ const icons = {
   dehumidifier: "◍",
   light: "☼",
 };
+let activeSpeechUtterance = null;
+let activeSpeechAudio = null;
+let speechRequestId = 0;
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -36,6 +42,113 @@ function showToast(message) {
   toast.textContent = message;
   toast.classList.add("show");
   window.setTimeout(() => toast.classList.remove("show"), 2200);
+}
+
+function updateVoiceReplyButton() {
+  const button = document.querySelector("#voiceReplyButton");
+  button.textContent = `语音播报：${state.voiceReplyEnabled ? "开" : "关"}`;
+  button.setAttribute("aria-pressed", String(state.voiceReplyEnabled));
+  button.classList.toggle("active", state.voiceReplyEnabled);
+}
+
+function speechSynthesisSupported() {
+  return (
+    "speechSynthesis" in window &&
+    "SpeechSynthesisUtterance" in window
+  );
+}
+
+function stopSpeaking() {
+  if (speechSynthesisSupported()) window.speechSynthesis.cancel();
+  activeSpeechUtterance = null;
+  if (activeSpeechAudio) {
+    activeSpeechAudio.pause();
+    activeSpeechAudio.removeAttribute("src");
+    activeSpeechAudio = null;
+  }
+}
+
+function cleanSpokenText(text) {
+  return String(text)
+    .replace(/https?:\/\/\S+/g, "链接")
+    .replace(/[*_`#>]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 400);
+}
+
+async function speakAssistant(text) {
+  if (!state.voiceReplyEnabled) return false;
+  const spokenText = cleanSpokenText(text);
+  if (!spokenText) return false;
+
+  const requestId = ++speechRequestId;
+  stopSpeaking();
+  if (speechSynthesisSupported()) {
+    const utterance = new SpeechSynthesisUtterance(spokenText);
+    const voices = window.speechSynthesis.getVoices();
+    utterance.voice =
+      voices.find((voice) => voice.lang.toLowerCase() === "zh-cn") ||
+      voices.find((voice) => voice.lang.toLowerCase().startsWith("zh")) ||
+      null;
+    utterance.lang = "zh-CN";
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    activeSpeechUtterance = utterance;
+    utterance.addEventListener("end", () => {
+      if (activeSpeechUtterance === utterance) activeSpeechUtterance = null;
+    });
+    window.speechSynthesis.speak(utterance);
+    return true;
+  }
+
+  try {
+    const response = await fetch("/api/voice/synthesize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: spokenText }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "云端语音播报失败");
+    if (
+      requestId !== speechRequestId ||
+      !state.voiceReplyEnabled
+    ) return;
+
+    const audio = new Audio(result.audio_url);
+    activeSpeechAudio = audio;
+    audio.addEventListener("ended", () => {
+      if (activeSpeechAudio === audio) activeSpeechAudio = null;
+    });
+    audio.addEventListener("error", () => {
+      if (activeSpeechAudio === audio) activeSpeechAudio = null;
+      showToast("云端语音播放失败");
+    });
+    await audio.play();
+    return true;
+  } catch (error) {
+    if (requestId === speechRequestId) {
+      showToast(error.message || "云端语音播报失败");
+    }
+    return false;
+  }
+}
+
+async function toggleVoiceReply() {
+  state.voiceReplyEnabled = !state.voiceReplyEnabled;
+  window.localStorage.setItem(
+    voiceReplyStorageKey,
+    state.voiceReplyEnabled ? "1" : "0",
+  );
+  updateVoiceReplyButton();
+  if (state.voiceReplyEnabled) {
+    const played = await speakAssistant("语音播报已开启。");
+    if (played) showToast("语音播报已开启");
+  } else {
+    speechRequestId += 1;
+    stopSpeaking();
+    showToast("语音播报已关闭");
+  }
 }
 
 let sceneBannerTimer = null;
@@ -194,9 +307,15 @@ async function refreshState() {
   renderAlarms(data.alarms);
   refreshWeather(data.settings);
 
+  const dueAlarmMessages = [];
   for (const alarm of data.due_alarms) {
-    addMessage(`闹钟提醒：${alarm.label}`, "assistant");
+    const reminder = `闹钟提醒：${alarm.label}`;
+    addMessage(reminder, "assistant");
+    dueAlarmMessages.push(reminder);
     showToast(`闹钟：${alarm.label}`);
+  }
+  if (dueAlarmMessages.length) {
+    speakAssistant(dueAlarmMessages.join("；"));
   }
 }
 
@@ -212,6 +331,7 @@ async function sendMessage(message) {
       }),
     });
     addMessage(result.reply, "assistant");
+    speakAssistant(result.reply);
     if (result.intent === "home_arrival") showSceneBanner();
     await refreshState();
   } catch (error) {
@@ -388,6 +508,7 @@ document.querySelector("#chatForm").addEventListener("submit", async (event) => 
 });
 
 document.querySelector("#voiceButton").addEventListener("click", toggleRecording);
+document.querySelector("#voiceReplyButton").addEventListener("click", toggleVoiceReply);
 
 document.querySelectorAll("[data-message]").forEach((button) => {
   button.addEventListener("click", () => sendMessage(button.dataset.message));
@@ -435,5 +556,6 @@ const currentHour = new Date().getHours();
 document.querySelector("#greeting").textContent =
   currentHour < 11 ? "早上好" : currentHour < 18 ? "下午好" : "晚上好";
 
+updateVoiceReplyButton();
 refreshState().catch((error) => showToast(error.message));
 window.setInterval(() => refreshState().catch(() => {}), 15000);

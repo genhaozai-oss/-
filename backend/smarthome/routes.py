@@ -9,6 +9,7 @@ from . import database
 from .devices import set_device_capability, set_device_state
 from .home import run_comfort_rules, run_home_arrival
 from .intent import handle_message
+from .tts import SpeechSynthesisError
 from .voice import SpeechRecognitionError
 from .weather import geocode_location, get_weather
 
@@ -192,7 +193,34 @@ def chat():
 @api.get("/api/voice/status")
 def voice_status():
     recognizer = current_app.extensions["speech_recognizer"]
-    return jsonify(recognizer.status())
+    synthesizer = current_app.extensions["speech_synthesizer"]
+    status = recognizer.status()
+    status["tts"] = synthesizer.status()
+    return jsonify(status)
+
+
+@api.post("/api/voice/synthesize")
+def synthesize_voice():
+    synthesizer = current_app.extensions["speech_synthesizer"]
+    if not synthesizer.available:
+        return error("云端语音播报尚未配置。", 503)
+
+    payload = request.get_json(silent=True) or {}
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        return error("播报文字不能为空。")
+    if len(text) > 400:
+        return error("单次播报不能超过 400 个字符。")
+
+    try:
+        result = synthesizer.synthesize(text)
+    except SpeechSynthesisError as exc:
+        current_app.logger.warning("语音合成失败：%s", exc)
+        return error(str(exc), 503)
+    except Exception:
+        current_app.logger.exception("语音合成发生未预期错误")
+        return error("语音合成失败，请稍后重试。", 503)
+    return jsonify(result)
 
 
 @api.post("/api/voice/transcribe")

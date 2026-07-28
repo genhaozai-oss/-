@@ -582,6 +582,12 @@ h1 span {
   font-size: 10px;
 }
 
+.quick-commands button.active {
+  border-color: rgba(220, 164, 141, 0.7);
+  color: white;
+  background: rgba(220, 164, 141, 0.18);
+}
+
 .alarm-list {
   display: flex;
   gap: 12px;
