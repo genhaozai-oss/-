@@ -16,6 +16,9 @@ def test_index_includes_optional_chinese_voice_reply(client):
     assert "speechSynthesis" in script
     assert "SpeechSynthesisUtterance" in script
     assert "/api/voice/synthesize" in script
+    assert 'id="ttsVoiceSelect"' in html
+    assert 'id="previewVoiceButton"' in html
+    assert "Extended_Pictographic" in script
 
 
 def test_index_includes_persistent_automation_manager(client):

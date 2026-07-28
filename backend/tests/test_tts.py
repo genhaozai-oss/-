@@ -98,28 +98,63 @@ def test_cloud_tts_upgrades_trusted_audio_url_to_https(app, monkeypatch):
     assert result["audio_url"].startswith("https://")
 
 
+def test_cloud_tts_removes_emoji_and_uses_selected_voice(app, monkeypatch):
+    synthesizer = configured_synthesizer(app)
+
+    def fake_urlopen(request, timeout):
+        payload = json.loads(request.data.decode("utf-8"))
+        assert payload["input"]["text"] == "欢迎回家，今天也辛苦啦！"
+        assert payload["input"]["voice"] == "Serena"
+        return FakeResponse(
+            {
+                "output": {
+                    "audio": {
+                        "url": "https://example.oss-cn-beijing.aliyuncs.com/test.wav"
+                    }
+                }
+            }
+        )
+
+    monkeypatch.setattr("smarthome.tts.urlopen", fake_urlopen)
+    result = synthesizer.synthesize(
+        "欢迎回家😊，今天也辛苦啦！✨", voice="Serena"
+    )
+
+    assert result["voice"] == "Serena"
+
+
+def test_cloud_tts_rejects_unknown_voice(app):
+    synthesizer = configured_synthesizer(app)
+
+    with pytest.raises(SpeechSynthesisError, match="不支持"):
+        synthesizer.synthesize("测试", voice="unknown")
+
+
 def test_tts_endpoint_returns_synthesis_result(app, client):
     class FakeSynthesizer:
         available = True
 
-        def synthesize(self, text):
+        def synthesize(self, text, voice=None):
             assert text == "欢迎回家。"
+            assert voice == "Serena"
             return {
                 "audio_url": (
                     "https://example.oss-cn-beijing.aliyuncs.com/test.wav"
                 ),
                 "provider": "aliyun",
                 "model": "qwen3-tts-flash",
+                "voice": voice,
             }
 
     app.extensions["speech_synthesizer"] = FakeSynthesizer()
     response = client.post(
         "/api/voice/synthesize",
-        json={"text": "欢迎回家。"},
+        json={"text": "欢迎回家。", "voice": "Serena"},
     )
 
     assert response.status_code == 200
     assert response.get_json()["provider"] == "aliyun"
+    assert response.get_json()["voice"] == "Serena"
 
 
 def test_tts_endpoint_requires_configuration(client):

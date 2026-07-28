@@ -1,4 +1,5 @@
 import json
+import re
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse, urlunparse
 from urllib.request import Request, urlopen
@@ -6,6 +7,23 @@ from urllib.request import Request, urlopen
 
 class SpeechSynthesisError(RuntimeError):
     pass
+
+
+TTS_VOICES = {
+    "Serena": "温柔自然女声",
+    "Chelsie": "柔和可爱女声",
+    "Ethan": "清爽温暖男声",
+    "Cherry": "活泼女声",
+}
+
+EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F1E6-\U0001F1FF"
+    "\U0001F300-\U0001FAFF"
+    "\u2600-\u27BF"
+    "\uFE0F\u200D\u20E3"
+    "]+"
+)
 
 
 class SpeechSynthesizer:
@@ -27,6 +45,10 @@ class SpeechSynthesizer:
             "provider": "aliyun" if self.available else "unavailable",
             "model": self.model if self.available else None,
             "voice": self.voice if self.available else None,
+            "voices": [
+                {"id": voice_id, "label": label}
+                for voice_id, label in TTS_VOICES.items()
+            ],
             "last_error": self.last_error,
         }
 
@@ -71,20 +93,30 @@ class SpeechSynthesizer:
             and cls._allowed_audio_hostname(hostname)
         )
 
-    def synthesize(self, text):
-        text = str(text or "").strip()
+    @staticmethod
+    def clean_text(text):
+        text = re.sub(r"https?://\S+", "链接", str(text or ""))
+        text = EMOJI_PATTERN.sub("", text)
+        text = re.sub(r"[*_`#>]", "", text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    def synthesize(self, text, voice=None):
+        text = self.clean_text(text)
         if not text:
             raise SpeechSynthesisError("播报文字不能为空。")
         if len(text) > 400:
             raise SpeechSynthesisError("单次播报不能超过 400 个字符。")
         if not self.available:
             raise SpeechSynthesisError("云端语音播报尚未配置。")
+        selected_voice = str(voice or self.voice).strip()
+        if selected_voice not in TTS_VOICES:
+            raise SpeechSynthesisError("不支持这个语音音色。")
 
         payload = {
             "model": self.model,
             "input": {
                 "text": text,
-                "voice": self.voice,
+                "voice": selected_voice,
                 "language_type": "Chinese",
             },
         }
@@ -130,4 +162,5 @@ class SpeechSynthesizer:
             "audio_url": audio_url,
             "provider": "aliyun",
             "model": self.model,
+            "voice": selected_voice,
         }

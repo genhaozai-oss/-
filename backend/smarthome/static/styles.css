@@ -588,6 +588,42 @@ h1 span {
   background: rgba(220, 164, 141, 0.18);
 }
 
+.voice-settings {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: #c8d7d0;
+  font-size: 10px;
+}
+
+.voice-settings select,
+.voice-settings button {
+  min-height: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 9px;
+  color: #e7efeb;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.voice-settings select {
+  min-width: 0;
+  padding: 0 9px;
+}
+
+.voice-settings option {
+  color: #1f342d;
+}
+
+.voice-settings button {
+  padding: 0 12px;
+}
+
+.voice-settings button:disabled {
+  opacity: 0.55;
+}
+
 .alarm-list {
   display: flex;
   gap: 12px;

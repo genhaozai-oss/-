@@ -264,13 +264,14 @@ def synthesize_voice():
 
     payload = request.get_json(silent=True) or {}
     text = str(payload.get("text", "")).strip()
+    voice = str(payload.get("voice", "")).strip() or None
     if not text:
         return error("播报文字不能为空。")
     if len(text) > 400:
         return error("单次播报不能超过 400 个字符。")
 
     try:
-        result = synthesizer.synthesize(text)
+        result = synthesizer.synthesize(text, voice=voice)
     except SpeechSynthesisError as exc:
         current_app.logger.warning("语音合成失败：%s", exc)
         return error(str(exc), 503)

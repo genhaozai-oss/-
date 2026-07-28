@@ -65,7 +65,7 @@ def create_app(test_config=None):
             os.getenv("SMARTHOME_LLM_API_KEY", ""),
         ),
         TTS_MODEL=os.getenv("SMARTHOME_TTS_MODEL", "qwen3-tts-flash"),
-        TTS_VOICE=os.getenv("SMARTHOME_TTS_VOICE", "Cherry"),
+        TTS_VOICE=os.getenv("SMARTHOME_TTS_VOICE", "Serena"),
         TTS_TIMEOUT_SECONDS=12,
         MAX_CONTENT_LENGTH=7 * 1024 * 1024,
         TESTING=False,

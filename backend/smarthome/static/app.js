@@ -1,5 +1,6 @@
 const storedSessionId = window.localStorage.getItem("smarthome_session_id");
 const voiceReplyStorageKey = "smarthome_voice_reply_enabled";
+const ttsVoiceStorageKey = "smarthome_tts_voice";
 const sessionId =
   storedSessionId ||
   (window.crypto?.randomUUID?.() ??
@@ -12,6 +13,7 @@ const state = {
   weatherUpdatedAt: 0,
   voiceReplyEnabled:
     window.localStorage.getItem(voiceReplyStorageKey) === "1",
+  ttsVoice: window.localStorage.getItem(ttsVoiceStorageKey) || "Serena",
 };
 
 const icons = {
@@ -71,48 +73,53 @@ function stopSpeaking() {
 function cleanSpokenText(text) {
   return String(text)
     .replace(/https?:\/\/\S+/g, "链接")
+    .replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, "")
+    .replace(/[\u{1F1E6}-\u{1F1FF}\u20E3]/gu, "")
     .replace(/[*_`#>]/g, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 400);
 }
 
-async function speakAssistant(text) {
-  if (!state.voiceReplyEnabled) return false;
+function speakWithSystemVoice(spokenText) {
+  if (!speechSynthesisSupported()) return false;
+  const utterance = new SpeechSynthesisUtterance(spokenText);
+  const voices = window.speechSynthesis.getVoices();
+  utterance.voice =
+    voices.find((voice) => voice.lang.toLowerCase() === "zh-cn") ||
+    voices.find((voice) => voice.lang.toLowerCase().startsWith("zh")) ||
+    null;
+  utterance.lang = "zh-CN";
+  utterance.rate = 1.05;
+  utterance.pitch = 1.05;
+  activeSpeechUtterance = utterance;
+  utterance.addEventListener("end", () => {
+    if (activeSpeechUtterance === utterance) activeSpeechUtterance = null;
+  });
+  window.speechSynthesis.speak(utterance);
+  return true;
+}
+
+async function speakAssistant(text, { force = false } = {}) {
+  if (!state.voiceReplyEnabled && !force) return false;
   const spokenText = cleanSpokenText(text);
   if (!spokenText) return false;
 
   const requestId = ++speechRequestId;
   stopSpeaking();
-  if (speechSynthesisSupported()) {
-    const utterance = new SpeechSynthesisUtterance(spokenText);
-    const voices = window.speechSynthesis.getVoices();
-    utterance.voice =
-      voices.find((voice) => voice.lang.toLowerCase() === "zh-cn") ||
-      voices.find((voice) => voice.lang.toLowerCase().startsWith("zh")) ||
-      null;
-    utterance.lang = "zh-CN";
-    utterance.rate = 1;
-    utterance.pitch = 1;
-    activeSpeechUtterance = utterance;
-    utterance.addEventListener("end", () => {
-      if (activeSpeechUtterance === utterance) activeSpeechUtterance = null;
-    });
-    window.speechSynthesis.speak(utterance);
-    return true;
-  }
+  if (state.ttsVoice === "system") return speakWithSystemVoice(spokenText);
 
   try {
     const response = await fetch("/api/voice/synthesize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: spokenText }),
+      body: JSON.stringify({ text: spokenText, voice: state.ttsVoice }),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "云端语音播报失败");
     if (
       requestId !== speechRequestId ||
-      !state.voiceReplyEnabled
+      (!state.voiceReplyEnabled && !force)
     ) return;
 
     const audio = new Audio(result.audio_url);
@@ -127,11 +134,36 @@ async function speakAssistant(text) {
     await audio.play();
     return true;
   } catch (error) {
+    if (requestId === speechRequestId && speechSynthesisSupported()) {
+      showToast("云端音色不可用，已改用系统声音");
+      return speakWithSystemVoice(spokenText);
+    }
     if (requestId === speechRequestId) {
       showToast(error.message || "云端语音播报失败");
     }
     return false;
   }
+}
+
+async function previewVoice() {
+  const button = document.querySelector("#previewVoiceButton");
+  button.disabled = true;
+  try {
+    const played = await speakAssistant(
+      "你好呀，我是栖居，很高兴陪你一起照顾这个家。",
+      { force: true },
+    );
+    if (played) showToast("正在试听当前音色");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function updateTtsVoice() {
+  const select = document.querySelector("#ttsVoiceSelect");
+  state.ttsVoice = select.value;
+  window.localStorage.setItem(ttsVoiceStorageKey, state.ttsVoice);
+  showToast(`播报音色已切换为${select.selectedOptions[0].textContent}`);
 }
 
 async function toggleVoiceReply() {
@@ -716,6 +748,8 @@ document.querySelector("#chatForm").addEventListener("submit", async (event) => 
 
 document.querySelector("#voiceButton").addEventListener("click", toggleRecording);
 document.querySelector("#voiceReplyButton").addEventListener("click", toggleVoiceReply);
+document.querySelector("#ttsVoiceSelect").addEventListener("change", updateTtsVoice);
+document.querySelector("#previewVoiceButton").addEventListener("click", previewVoice);
 
 document.querySelectorAll("[data-message]").forEach((button) => {
   button.addEventListener("click", () => sendMessage(button.dataset.message));
@@ -768,5 +802,6 @@ document.querySelector("#greeting").textContent =
   currentHour < 11 ? "早上好" : currentHour < 18 ? "下午好" : "晚上好";
 
 updateVoiceReplyButton();
+document.querySelector("#ttsVoiceSelect").value = state.ttsVoice;
 refreshState().catch((error) => showToast(error.message));
 window.setInterval(() => refreshState().catch(() => {}), 15000);
