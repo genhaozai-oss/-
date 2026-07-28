@@ -28,7 +28,7 @@ TOOLS = [
                 "properties": {
                     "device_name": {
                         "type": "string",
-                        "description": "设备的完整名称，例如客厅风扇。",
+                        "description": "设备的完整名称，必须使用当前设备列表中的名称。",
                     },
                     "state": {
                         "type": "string",

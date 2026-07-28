@@ -35,7 +35,20 @@ def create_app(test_config=None):
         SPEECH_MODEL=os.getenv("SMARTHOME_SPEECH_MODEL", "small"),
         SPEECH_DEVICE=os.getenv("SMARTHOME_SPEECH_DEVICE", "cpu"),
         SPEECH_COMPUTE_TYPE=os.getenv("SMARTHOME_SPEECH_COMPUTE_TYPE", "int8"),
-        MAX_CONTENT_LENGTH=10 * 1024 * 1024,
+        SPEECH_CLOUD_BASE_URL=os.getenv(
+            "SMARTHOME_SPEECH_BASE_URL",
+            os.getenv("SMARTHOME_LLM_BASE_URL", ""),
+        ),
+        SPEECH_CLOUD_API_KEY=os.getenv(
+            "SMARTHOME_SPEECH_API_KEY",
+            os.getenv("SMARTHOME_LLM_API_KEY", ""),
+        ),
+        SPEECH_CLOUD_MODEL=os.getenv(
+            "SMARTHOME_SPEECH_MODEL_CLOUD",
+            "qwen3-asr-flash",
+        ),
+        SPEECH_CLOUD_TIMEOUT_SECONDS=8,
+        MAX_CONTENT_LENGTH=7 * 1024 * 1024,
         TESTING=False,
     )
 

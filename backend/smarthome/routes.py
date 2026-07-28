@@ -9,6 +9,7 @@ from . import database
 from .devices import set_device_capability, set_device_state
 from .home import run_comfort_rules, run_home_arrival
 from .intent import handle_message
+from .voice import SpeechRecognitionError
 from .weather import geocode_location, get_weather
 
 
@@ -188,12 +189,18 @@ def chat():
     )
 
 
+@api.get("/api/voice/status")
+def voice_status():
+    recognizer = current_app.extensions["speech_recognizer"]
+    return jsonify(recognizer.status())
+
+
 @api.post("/api/voice/transcribe")
 def transcribe_voice():
     recognizer = current_app.extensions["speech_recognizer"]
     if not recognizer.available:
         return error(
-            "尚未安装本地语音模型，请安装 requirements-voice.txt。",
+            "语音识别不可用：请配置百炼 API，或安装 requirements-voice.txt。",
             503,
         )
 
@@ -202,20 +209,41 @@ def transcribe_voice():
         return error("没有收到录音文件。")
 
     suffix = Path(audio.filename).suffix.lower()
-    if suffix not in {".webm", ".wav", ".mp3", ".m4a", ".ogg"}:
+    if suffix not in {
+        ".aac",
+        ".aiff",
+        ".amr",
+        ".flac",
+        ".mp3",
+        ".ogg",
+        ".opus",
+        ".wav",
+        ".webm",
+    }:
         suffix = ".webm"
     temporary_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temporary:
             temporary_path = Path(temporary.name)
             audio.save(temporary)
-        transcription = recognizer.transcribe(temporary_path)
-    except Exception:
-        current_app.logger.exception("本地语音识别失败")
-        return error(
-            "本地语音模型加载或识别失败，请检查模型缓存和运行配置。",
-            503,
+        devices = database.list_devices()
+        context_terms = [
+            term
+            for device in devices
+            for term in (device["name"], device.get("room"))
+            if term
+        ]
+        transcription = recognizer.transcribe(
+            temporary_path,
+            mime_type=audio.mimetype,
+            context_terms=context_terms,
         )
+    except SpeechRecognitionError as exc:
+        current_app.logger.warning("语音识别失败：%s", exc)
+        return error(str(exc), 503)
+    except Exception:
+        current_app.logger.exception("语音识别发生未预期错误")
+        return error("语音识别失败，请稍后重试。", 503)
     finally:
         if temporary_path:
             temporary_path.unlink(missing_ok=True)
@@ -223,12 +251,14 @@ def transcribe_voice():
     text = transcription["text"].strip()
     if not text:
         return error("没有识别到清晰语音，请靠近麦克风再试一次。", 422)
-    result = process_message(
-        text,
-        request.form.get("selected_device_id") or None,
-        request.form.get("session_id"),
-    )
-    return jsonify({"transcription": transcription, "result": result})
+    response = {"transcription": transcription}
+    if request.form.get("execute", "1") != "0":
+        response["result"] = process_message(
+            text,
+            request.form.get("selected_device_id") or None,
+            request.form.get("session_id"),
+        )
+    return jsonify(response)
 
 
 @api.post("/api/environment")

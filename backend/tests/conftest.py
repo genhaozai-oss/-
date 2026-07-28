@@ -13,6 +13,8 @@ def app(tmp_path):
             "LLM_BASE_URL": "",
             "LLM_API_KEY": "",
             "LLM_MODEL": "",
+            "SPEECH_CLOUD_BASE_URL": "",
+            "SPEECH_CLOUD_API_KEY": "",
         }
     )
 

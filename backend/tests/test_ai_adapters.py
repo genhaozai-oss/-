@@ -1,7 +1,9 @@
 import io
+import json
 
 from smarthome import database
 from smarthome.agent import SmartHomeAgent
+from smarthome.voice import SpeechRecognitionError, SpeechRecognizer
 
 
 class FakeLlm:
@@ -19,12 +21,18 @@ class FakeLlm:
 class FakeSpeechRecognizer:
     available = True
 
-    def transcribe(self, audio_path):
+    def transcribe(self, audio_path, mime_type=None, context_terms=None):
         assert audio_path.exists()
+        assert mime_type == "audio/webm"
+        assert "客厅风扇" in context_terms
         return {
-            "text": "打开客厅风扇",
+            "text": "打开客厅风扇。",
             "language": "zh",
             "language_probability": 0.99,
+            "provider": "aliyun",
+            "provider_label": "阿里云 Qwen3-ASR",
+            "model": "qwen3-asr-flash",
+            "latency_ms": 320,
         }
 
 
@@ -184,13 +192,151 @@ def test_unknown_text_can_use_validated_llm_plan(app, client):
 
 def test_voice_transcription_runs_through_same_intent_pipeline(app, client):
     app.extensions["speech_recognizer"] = FakeSpeechRecognizer()
+    transcription_response = client.post(
+        "/api/voice/transcribe",
+        data={
+            "audio": (
+                io.BytesIO(b"fake-audio"),
+                "voice.webm",
+                "audio/webm",
+            ),
+            "execute": "0",
+        },
+        content_type="multipart/form-data",
+    )
+    assert transcription_response.status_code == 200
+    transcription = transcription_response.get_json()["transcription"]
+    assert transcription["text"] == "打开客厅风扇。"
+    assert transcription["provider"] == "aliyun"
+
+    result = client.post(
+        "/api/chat",
+        json={"message": transcription["text"]},
+    ).get_json()
+    assert result["actions"][0]["state"] == "on"
+
+
+def test_voice_endpoint_keeps_execute_compatibility(app, client):
+    app.extensions["speech_recognizer"] = FakeSpeechRecognizer()
     result = client.post(
         "/api/voice/transcribe",
-        data={"audio": (io.BytesIO(b"fake-audio"), "voice.webm")},
+        data={
+            "audio": (
+                io.BytesIO(b"fake-audio"),
+                "voice.webm",
+                "audio/webm",
+            )
+        },
         content_type="multipart/form-data",
     ).get_json()
-    assert result["transcription"]["text"] == "打开客厅风扇"
+
+    assert result["transcription"]["text"] == "打开客厅风扇。"
     assert result["result"]["actions"][0]["state"] == "on"
+
+
+def test_cloud_speech_uses_context_and_returns_diagnostics(
+    app,
+    tmp_path,
+    monkeypatch,
+):
+    app.config.update(
+        {
+            "SPEECH_CLOUD_BASE_URL": "https://example.test/v1",
+            "SPEECH_CLOUD_API_KEY": "test-key",
+            "SPEECH_CLOUD_MODEL": "qwen3-asr-flash",
+        }
+    )
+    audio_path = tmp_path / "voice.webm"
+    audio_path.write_bytes(b"fake-webm")
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "打开卧室灯",
+                        "annotations": [
+                            {
+                                "type": "audio_info",
+                                "language": "zh",
+                                "emotion": "neutral",
+                            }
+                        ],
+                    }
+                }
+            ],
+            "usage": {"seconds": 2},
+        }
+        return io.BytesIO(json.dumps(response).encode("utf-8"))
+
+    monkeypatch.setattr("smarthome.voice.urlopen", fake_urlopen)
+    recognizer = SpeechRecognizer(app)
+    result = recognizer.transcribe(
+        audio_path,
+        mime_type="audio/webm;codecs=opus",
+        context_terms=["卧室灯", "卧室"],
+    )
+
+    payload = json.loads(captured["request"].data.decode("utf-8"))
+    assert captured["request"].full_url.endswith("/chat/completions")
+    assert captured["request"].headers["Authorization"] == "Bearer test-key"
+    assert payload["model"] == "qwen3-asr-flash"
+    assert "卧室灯" in payload["messages"][0]["content"][0]["text"]
+    assert payload["messages"][1]["content"][0]["input_audio"]["data"].startswith(
+        "data:audio/webm;base64,"
+    )
+    assert payload["asr_options"] == {
+        "language": "zh",
+        "enable_itn": True,
+    }
+    assert result["text"] == "打开卧室灯"
+    assert result["provider"] == "aliyun"
+    assert result["emotion"] == "neutral"
+    assert result["audio_seconds"] == 2
+    assert result["latency_ms"] >= 0
+
+
+def test_cloud_speech_failure_falls_back_to_local(app, tmp_path, monkeypatch):
+    app.config.update(
+        {
+            "SPEECH_CLOUD_BASE_URL": "https://example.test/v1",
+            "SPEECH_CLOUD_API_KEY": "test-key",
+            "SPEECH_CLOUD_MODEL": "qwen3-asr-flash",
+        }
+    )
+    audio_path = tmp_path / "voice.wav"
+    audio_path.write_bytes(b"fake-wav")
+    recognizer = SpeechRecognizer(app)
+
+    def fail_cloud(*_args):
+        raise SpeechRecognitionError("模拟云端超时")
+
+    def use_local(*_args):
+        return {
+            "text": "打开书房风扇",
+            "language": "zh",
+            "provider": "local",
+            "provider_label": "本地 Whisper",
+            "model": "small",
+        }
+
+    monkeypatch.setattr(
+        SpeechRecognizer,
+        "local_available",
+        property(lambda _self: True),
+    )
+    monkeypatch.setattr(recognizer, "_transcribe_cloud", fail_cloud)
+    monkeypatch.setattr(recognizer, "_transcribe_local", use_local)
+
+    result = recognizer.transcribe(audio_path, mime_type="audio/wav")
+
+    assert result["text"] == "打开书房风扇"
+    assert result["provider"] == "local"
+    assert result["fallback_from"] == "aliyun"
+    assert recognizer.last_cloud_error == "模拟云端超时"
 
 
 def test_ai_status_and_connection_probe(app, client):

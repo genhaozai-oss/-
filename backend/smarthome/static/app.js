@@ -221,12 +221,55 @@ async function sendMessage(message) {
 
 let mediaRecorder = null;
 let recordedChunks = [];
+let recordingTimer = null;
+let voicePreparing = false;
+let voiceProcessing = false;
+const MAX_RECORDING_MS = 10000;
+const VOICE_REQUEST_TIMEOUT_MS = 25000;
+
+function preferredRecordingMimeType() {
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/ogg;codecs=opus",
+  ];
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+}
+
+function recordingFileName(mimeType) {
+  const baseType = mimeType.split(";", 1)[0];
+  const extensions = {
+    "audio/ogg": "ogg",
+    "audio/wav": "wav",
+    "audio/webm": "webm",
+  };
+  return `recording.${extensions[baseType] || "webm"}`;
+}
+
+function stopRecording() {
+  window.clearTimeout(recordingTimer);
+  recordingTimer = null;
+  if (mediaRecorder?.state === "recording") {
+    mediaRecorder.stop();
+  }
+  const button = document.querySelector("#voiceButton");
+  button.classList.remove("recording");
+  button.disabled = true;
+}
 
 async function toggleRecording() {
   const button = document.querySelector("#voiceButton");
+  if (voicePreparing) {
+    showToast("正在获取麦克风，请稍候");
+    return;
+  }
+  if (voiceProcessing) {
+    showToast("上一段语音还在识别，请稍候");
+    return;
+  }
   if (mediaRecorder?.state === "recording") {
-    mediaRecorder.stop();
-    button.classList.remove("recording");
+    stopRecording();
+    showToast("录音结束，正在识别…");
     return;
   }
   if (!navigator.mediaDevices || !window.MediaRecorder) {
@@ -234,42 +277,104 @@ async function toggleRecording() {
     return;
   }
 
+  let stream = null;
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    voicePreparing = true;
+    button.disabled = true;
+    button.setAttribute("aria-label", "正在获取麦克风");
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
     recordedChunks = [];
-    mediaRecorder = new MediaRecorder(stream);
-    mediaRecorder.addEventListener("dataavailable", (event) => {
+    const mimeType = preferredRecordingMimeType();
+    if (!mimeType) {
+      throw new Error("当前浏览器不支持 WebM 或 Ogg 录音");
+    }
+    const recorder = new MediaRecorder(stream, { mimeType });
+    mediaRecorder = recorder;
+    recorder.addEventListener("dataavailable", (event) => {
       if (event.data.size > 0) recordedChunks.push(event.data);
     });
-    mediaRecorder.addEventListener("stop", async () => {
+    recorder.addEventListener("stop", async () => {
+      window.clearTimeout(recordingTimer);
+      recordingTimer = null;
       stream.getTracks().forEach((track) => track.stop());
-      const audio = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
+      voiceProcessing = true;
+      button.disabled = true;
+      button.classList.add("processing");
+      button.setAttribute("aria-label", "语音识别处理中");
+
+      const actualMimeType = recorder.mimeType || mimeType || "audio/webm";
+      const audio = new Blob(recordedChunks, { type: actualMimeType });
       const form = new FormData();
-      form.append("audio", audio, "recording.webm");
-      if (state.selectedDeviceId) {
-        form.append("selected_device_id", state.selectedDeviceId);
-      }
-      form.append("session_id", sessionId);
-      addMessage("正在识别语音…", "user");
+      form.append("audio", audio, recordingFileName(actualMimeType));
+      form.append("execute", "0");
+      showToast("正在识别中文…");
+
+      const controller = new AbortController();
+      const timeout = window.setTimeout(
+        () => controller.abort(),
+        VOICE_REQUEST_TIMEOUT_MS,
+      );
       try {
         const response = await fetch("/api/voice/transcribe", {
           method: "POST",
           body: form,
+          signal: controller.signal,
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || "语音识别失败");
-        addMessage(`识别结果：${result.transcription.text}`, "assistant");
-        addMessage(result.result.reply, "assistant");
-        await refreshState();
+        const transcription = result.transcription;
+        const seconds = (transcription.latency_ms / 1000).toFixed(1);
+        const fallback = transcription.fallback_from
+          ? "（云端不可用，已自动转为本地）"
+          : "";
+        showToast(
+          `${transcription.provider_label}${fallback}识别完成，用时 ${seconds} 秒`,
+        );
+        await sendMessage(transcription.text);
       } catch (error) {
-        addMessage(`语音识别失败：${error.message}`, "assistant");
+        const message =
+          error.name === "AbortError"
+            ? "语音识别超过25秒，请重试"
+            : error.message;
+        addMessage(`语音识别失败：${message}`, "assistant");
+      } finally {
+        window.clearTimeout(timeout);
+        voiceProcessing = false;
+        button.disabled = false;
+        button.classList.remove("processing");
+        button.setAttribute("aria-label", "语音输入");
+        if (mediaRecorder === recorder) mediaRecorder = null;
       }
     });
-    mediaRecorder.start();
+    recorder.start(250);
+    voicePreparing = false;
+    button.disabled = false;
+    button.setAttribute("aria-label", "语音输入");
     button.classList.add("recording");
-    showToast("正在聆听，再点一次结束");
+    recordingTimer = window.setTimeout(() => {
+      if (recorder.state === "recording") {
+        stopRecording();
+        showToast("已录满10秒，正在识别…");
+      }
+    }, MAX_RECORDING_MS);
+    showToast("正在聆听，再点一次结束；最多录10秒");
   } catch (error) {
-    showToast("无法使用麦克风，请检查浏览器权限");
+    stream?.getTracks().forEach((track) => track.stop());
+    voicePreparing = false;
+    button.disabled = false;
+    button.classList.remove("recording", "processing");
+    button.setAttribute("aria-label", "语音输入");
+    showToast(
+      error.message.includes("WebM")
+        ? `${error.message}，请使用 Edge 或 Chrome`
+        : "无法使用麦克风，请检查浏览器权限",
+    );
   }
 }
 
