@@ -1,6 +1,7 @@
 from dotenv import dotenv_values
 
 import configure_ai
+import configure_doubao_tts
 import configure_weather
 
 
@@ -21,6 +22,26 @@ def test_ai_configuration_is_saved_for_future_startups(tmp_path, monkeypatch):
 def test_token_plan_key_is_rejected():
     message = configure_ai.validate_key("sk-sp-12345678901234567890")
     assert "Token Plan" in message
+
+
+def test_doubao_tts_configuration_is_saved(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(configure_doubao_tts, "ENV_PATH", env_path)
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _prompt: "doubao-api-key-1234567890",
+    )
+
+    assert configure_doubao_tts.main() == 0
+
+    values = dotenv_values(env_path)
+    assert values["SMARTHOME_DOUBAO_TTS_API_KEY"] == (
+        "doubao-api-key-1234567890"
+    )
+    assert values["SMARTHOME_DOUBAO_TTS_RESOURCE_ID"] == "seed-tts-2.0"
+    assert values["SMARTHOME_DOUBAO_TTS_VOICE"] == (
+        "zh_female_vv_uranus_bigtts"
+    )
 
 
 def test_weather_configuration_is_saved_after_connection_check(

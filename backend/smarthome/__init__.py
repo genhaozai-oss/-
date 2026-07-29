@@ -67,6 +67,15 @@ def create_app(test_config=None):
         TTS_MODEL=os.getenv("SMARTHOME_TTS_MODEL", "qwen3-tts-flash"),
         TTS_VOICE=os.getenv("SMARTHOME_TTS_VOICE", "Serena"),
         TTS_TIMEOUT_SECONDS=12,
+        DOUBAO_TTS_API_KEY=os.getenv("SMARTHOME_DOUBAO_TTS_API_KEY", ""),
+        DOUBAO_TTS_RESOURCE_ID=os.getenv(
+            "SMARTHOME_DOUBAO_TTS_RESOURCE_ID",
+            "seed-tts-2.0",
+        ),
+        DOUBAO_TTS_VOICE=os.getenv(
+            "SMARTHOME_DOUBAO_TTS_VOICE",
+            "zh_female_vv_uranus_bigtts",
+        ),
         MAX_CONTENT_LENGTH=7 * 1024 * 1024,
         TESTING=False,
     )

@@ -1,3 +1,4 @@
+import base64
 import json
 
 import pytest
@@ -17,6 +18,23 @@ class FakeResponse:
 
     def read(self, *_args):
         return json.dumps(self.payload).encode("utf-8")
+
+
+class FakeStreamingResponse:
+    def __init__(self, events):
+        self.events = events
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def __iter__(self):
+        return iter(
+            json.dumps(event).encode("utf-8") + b"\n"
+            for event in self.events
+        )
 
 
 def configured_synthesizer(app):
@@ -128,6 +146,91 @@ def test_cloud_tts_rejects_unknown_voice(app):
 
     with pytest.raises(SpeechSynthesisError, match="不支持"):
         synthesizer.synthesize("测试", voice="unknown")
+
+
+def test_doubao_tts_2_uses_v3_stream_and_returns_audio_data(
+    app, monkeypatch
+):
+    app.config.update(
+        {
+            "DOUBAO_TTS_API_KEY": "doubao-api-key-test",
+            "DOUBAO_TTS_RESOURCE_ID": "seed-tts-2.0",
+            "DOUBAO_TTS_VOICE": "zh_female_vv_uranus_bigtts",
+            "TTS_BASE_URL": "",
+            "TTS_API_KEY": "",
+        }
+    )
+    synthesizer = SpeechSynthesizer(app)
+    status = synthesizer.status()
+    assert status["provider"] == "doubao"
+    assert status["provider_label"] == "豆包 TTS 2.0"
+    assert status["voices"][0]["id"] == "zh_female_vv_uranus_bigtts"
+
+    def fake_urlopen(request, timeout):
+        assert timeout == 12
+        assert request.get_header("X-api-key") == "doubao-api-key-test"
+        assert request.get_header("X-api-resource-id") == "seed-tts-2.0"
+        payload = json.loads(request.data.decode("utf-8"))
+        assert payload["req_params"]["speaker"] == (
+            "zh_female_vv_uranus_bigtts"
+        )
+        additions = json.loads(payload["req_params"]["additions"])
+        assert additions["disable_emoji_filter"] is False
+        return FakeStreamingResponse(
+            [
+                {
+                    "code": 0,
+                    "message": "OK",
+                    "data": base64.b64encode(b"fake-mp3").decode("ascii"),
+                },
+                {"code": 20000000, "message": "OK"},
+            ]
+        )
+
+    monkeypatch.setattr("smarthome.tts.urlopen", fake_urlopen)
+    result = synthesizer.synthesize("欢迎回家😊")
+
+    assert result["provider"] == "doubao"
+    assert result["model"] == "seed-tts-2.0"
+    assert result["audio_url"] == (
+        "data:audio/mpeg;base64,"
+        + base64.b64encode(b"fake-mp3").decode("ascii")
+    )
+
+
+def test_doubao_failure_falls_back_to_aliyun(app, monkeypatch):
+    app.config.update(
+        {
+            "DOUBAO_TTS_API_KEY": "doubao-api-key-test",
+            "DOUBAO_TTS_RESOURCE_ID": "seed-tts-2.0",
+            "DOUBAO_TTS_VOICE": "zh_female_vv_uranus_bigtts",
+            "TTS_BASE_URL": "https://dashscope.aliyuncs.com/api/v1",
+            "TTS_API_KEY": "sk-test",
+            "TTS_MODEL": "qwen3-tts-flash",
+            "TTS_VOICE": "Serena",
+        }
+    )
+    synthesizer = SpeechSynthesizer(app)
+
+    def fake_urlopen(request, timeout):
+        if "bytedance.com" in request.full_url:
+            raise TimeoutError("timeout")
+        return FakeResponse(
+            {
+                "output": {
+                    "audio": {
+                        "url": "https://example.oss-cn-beijing.aliyuncs.com/test.wav"
+                    }
+                }
+            }
+        )
+
+    monkeypatch.setattr("smarthome.tts.urlopen", fake_urlopen)
+    result = synthesizer.synthesize("欢迎回家")
+
+    assert result["provider"] == "aliyun"
+    assert result["fallback_from"] == "doubao"
+    assert result["voice"] == "Serena"
 
 
 def test_tts_endpoint_returns_synthesis_result(app, client):

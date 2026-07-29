@@ -19,6 +19,9 @@ def test_index_includes_optional_chinese_voice_reply(client):
     assert 'id="ttsVoiceSelect"' in html
     assert 'id="previewVoiceButton"' in html
     assert "Extended_Pictographic" in script
+    assert 'id="ttsProviderLabel"' in html
+    assert "loadTtsVoices" in script
+    assert "豆包暂时不可用，已改用百炼播报" in script
 
 
 def test_index_includes_persistent_automation_manager(client):

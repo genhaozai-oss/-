@@ -117,6 +117,9 @@ async function speakAssistant(text, { force = false } = {}) {
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "云端语音播报失败");
+    if (result.fallback_from === "doubao") {
+      showToast("豆包暂时不可用，已改用百炼播报");
+    }
     if (
       requestId !== speechRequestId ||
       (!state.voiceReplyEnabled && !force)
@@ -164,6 +167,37 @@ function updateTtsVoice() {
   state.ttsVoice = select.value;
   window.localStorage.setItem(ttsVoiceStorageKey, state.ttsVoice);
   showToast(`播报音色已切换为${select.selectedOptions[0].textContent}`);
+}
+
+async function loadTtsVoices() {
+  const status = await api("/api/voice/status");
+  const tts = status.tts || {};
+  const select = document.querySelector("#ttsVoiceSelect");
+  const provider = document.querySelector("#ttsProviderLabel");
+  const voices = Array.isArray(tts.voices) ? tts.voices : [];
+  const savedVoice = state.ttsVoice;
+
+  select.replaceChildren();
+  voices.forEach((voice) => {
+    const option = document.createElement("option");
+    option.value = voice.id;
+    option.textContent = voice.label;
+    select.append(option);
+  });
+  const systemOption = document.createElement("option");
+  systemOption.value = "system";
+  systemOption.textContent = "系统免费音色";
+  select.append(systemOption);
+
+  const availableValues = [...select.options].map((option) => option.value);
+  state.ttsVoice = availableValues.includes(savedVoice)
+    ? savedVoice
+    : tts.voice || availableValues[0] || "system";
+  select.value = state.ttsVoice;
+  window.localStorage.setItem(ttsVoiceStorageKey, state.ttsVoice);
+  provider.textContent = tts.available
+    ? `当前：${tts.provider_label}${tts.fallback_available ? " · 百炼备用" : ""}`
+    : "当前：系统免费音色";
 }
 
 async function toggleVoiceReply() {
@@ -802,6 +836,8 @@ document.querySelector("#greeting").textContent =
   currentHour < 11 ? "早上好" : currentHour < 18 ? "下午好" : "晚上好";
 
 updateVoiceReplyButton();
-document.querySelector("#ttsVoiceSelect").value = state.ttsVoice;
+loadTtsVoices().catch(() => {
+  document.querySelector("#ttsProviderLabel").textContent = "音色状态读取失败";
+});
 refreshState().catch((error) => showToast(error.message));
 window.setInterval(() => refreshState().catch(() => {}), 15000);

@@ -598,6 +598,18 @@ h1 span {
   font-size: 10px;
 }
 
+.voice-settings label,
+.voice-settings label small {
+  display: block;
+}
+
+.voice-settings label small {
+  margin-top: 2px;
+  color: rgba(200, 215, 208, 0.7);
+  font-size: 8px;
+  white-space: nowrap;
+}
+
 .voice-settings select,
 .voice-settings button {
   min-height: 32px;

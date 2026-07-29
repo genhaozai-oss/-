@@ -17,6 +17,7 @@ def app(tmp_path):
             "SPEECH_CLOUD_API_KEY": "",
             "TTS_BASE_URL": "",
             "TTS_API_KEY": "",
+            "DOUBAO_TTS_API_KEY": "",
         }
     )
 
