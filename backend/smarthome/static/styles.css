@@ -868,6 +868,14 @@ h1 span {
   background: #c18a73;
 }
 
+.event-kind.undoable {
+  background: #7e927f;
+}
+
+.event-kind.undo {
+  background: #6f8799;
+}
+
 .event-item strong {
   margin-bottom: 3px;
   font-size: 12px;

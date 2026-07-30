@@ -17,6 +17,12 @@ from .scenes import (
     save_scene,
 )
 from .tts import SpeechSynthesisError
+from .undo import (
+    capture_device_snapshot,
+    is_undo_request,
+    record_undoable,
+    undo_last_action,
+)
 from .voice import SpeechRecognitionError
 from .weather import geocode_location, get_weather
 
@@ -119,7 +125,7 @@ def apply_llm_plan(plan):
     return None
 
 
-def process_message(message, selected_device_id=None, session_id="default"):
+def _process_message_core(message, selected_device_id=None, session_id="default"):
     scene_result = run_saved_scene_from_message(message)
     if scene_result:
         return scene_result
@@ -169,6 +175,20 @@ def process_message(message, selected_device_id=None, session_id="default"):
     llm_result = apply_llm_plan(plan)
     if llm_result:
         result = llm_result
+    return result
+
+
+def process_message(message, selected_device_id=None, session_id="default"):
+    if is_undo_request(message):
+        return undo_last_action()
+
+    snapshot = capture_device_snapshot()
+    result = _process_message_core(
+        message,
+        selected_device_id,
+        session_id,
+    )
+    record_undoable(snapshot, result, message)
     return result
 
 
@@ -462,6 +482,7 @@ def update_device(device_id):
     if name is not None and not str(name).strip():
         return error("设备名称不能为空。")
 
+    snapshot = capture_device_snapshot()
     try:
         device = database.update_device(
             device_id,
@@ -475,6 +496,15 @@ def update_device(device_id):
     if not device:
         return error("设备不存在。", 404)
     database.log_event("device", f"更新设备：{device['name']}", device)
+    record_undoable(
+        snapshot,
+        {
+            "intent": "manual_device_update",
+            "reply": f"网页更新设备：{device['name']}",
+            "actions": [{"device_id": device["id"]}],
+        },
+        "网页设备控制",
+    )
     return jsonify({"device": device})
 
 
@@ -483,6 +513,7 @@ def update_capability(device_id, capability):
     payload = request.get_json(silent=True) or {}
     if "value" not in payload:
         return error("请提供要设置的能力值。")
+    snapshot = capture_device_snapshot()
     try:
         value = float(payload["value"])
         updated = set_device_capability(device_id, capability, value)
@@ -496,6 +527,18 @@ def update_capability(device_id, capability):
         "device",
         f"调节{database.get_device(device_id)['name']}的{updated['display_name']}",
         updated,
+    )
+    record_undoable(
+        snapshot,
+        {
+            "intent": "manual_capability_update",
+            "reply": (
+                f"网页调节{database.get_device(device_id)['name']}"
+                f"{updated['display_name']}"
+            ),
+            "actions": [{"device_id": device_id}],
+        },
+        "网页能力调节",
     )
     return jsonify({"capability": updated})
 

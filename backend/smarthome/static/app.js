@@ -531,6 +531,8 @@ function renderEvents(events) {
     device: "设备",
     memory: "记忆",
     alarm: "闹钟",
+    undoable: "可撤销",
+    undo: "已撤销",
   };
   for (const event of events) {
     const element = document.createElement("div");
