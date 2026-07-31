@@ -125,6 +125,7 @@
         <div class="quick-commands">
           <button type="button" id="voiceReplyButton" aria-pressed="false">语音播报：关</button>
           <button data-message="撤销刚才的操作">撤销上一步</button>
+          <button data-message="立即巡检">运行 AI 自动流</button>
           <button data-message="室内温湿度怎么样">查询环境</button>
           <button data-message="以后湿度超过70%就自动打开抽湿器演示">添加自动化</button>
           <button data-message="记住睡眠模式：关掉灯，把风扇调到30%">记住场景</button>
@@ -168,6 +169,29 @@
         </div>
       </div>
       <div id="alarmList" class="alarm-list"></div>
+    </section>
+
+    <section class="card auto-flow-card">
+      <div class="card-heading">
+        <div>
+          <p class="card-kicker">感知 → 判断 → 安全 → 执行</p>
+          <h3>AI 自动流</h3>
+        </div>
+        <span id="autoFlowBadge" class="soft-badge">读取中</span>
+      </div>
+      <p id="autoFlowSummary" class="auto-flow-summary">
+        正在读取自动托管状态…
+      </p>
+      <div id="autoFlowSteps" class="auto-flow-steps"></div>
+      <div class="auto-flow-actions">
+        <button id="autoFlowToggleButton" type="button">暂停自动托管</button>
+        <button id="autoFlowRunButton" class="primary-action" type="button">
+          立即巡检
+        </button>
+      </div>
+      <p class="auto-flow-note">
+        手动控制后，该设备会交给你 30 分钟；实体涉水设备不会被自动开启。
+      </p>
     </section>
 
     <section class="card automations-card">

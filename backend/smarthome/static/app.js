@@ -11,6 +11,7 @@ const state = {
   selectedDeviceId: null,
   contextDeviceId: null,
   devices: [],
+  autoFlow: null,
   weatherUpdatedAt: 0,
   voiceReplyEnabled:
     window.localStorage.getItem(voiceReplyStorageKey) === "1",
@@ -448,6 +449,41 @@ function renderAutomations(automations) {
   }
 }
 
+function renderAutoFlow(autoFlow) {
+  if (!autoFlow) return;
+  state.autoFlow = autoFlow;
+  const badge = document.querySelector("#autoFlowBadge");
+  const summary = document.querySelector("#autoFlowSummary");
+  const toggle = document.querySelector("#autoFlowToggleButton");
+  const steps = document.querySelector("#autoFlowSteps");
+
+  badge.textContent = autoFlow.enabled ? "自动托管：开启" : "自动托管：暂停";
+  badge.classList.toggle("paused", !autoFlow.enabled);
+  summary.textContent = autoFlow.summary;
+  toggle.textContent = autoFlow.enabled ? "暂停自动托管" : "开启自动托管";
+  toggle.setAttribute(
+    "aria-label",
+    autoFlow.enabled ? "暂停 AI 自动托管" : "开启 AI 自动托管",
+  );
+
+  steps.replaceChildren();
+  for (const [index, step] of (autoFlow.steps || []).entries()) {
+    const element = document.createElement("article");
+    element.className = `auto-flow-step ${step.status || "idle"}`;
+    const number = document.createElement("span");
+    number.className = "auto-flow-step-number";
+    number.textContent = String(index + 1).padStart(2, "0");
+    const text = document.createElement("span");
+    const label = document.createElement("strong");
+    label.textContent = step.label;
+    const detail = document.createElement("small");
+    detail.textContent = step.detail;
+    text.append(label, detail);
+    element.append(number, text);
+    steps.append(element);
+  }
+}
+
 function renderScenes(scenes) {
   const container = document.querySelector("#sceneList");
   container.replaceChildren();
@@ -566,6 +602,8 @@ function renderEvents(events) {
     alarm: "闹钟",
     undoable: "可撤销",
     undo: "已撤销",
+    auto_flow: "自动流",
+    manual_override: "手动接管",
   };
   for (const event of events) {
     const element = document.createElement("div");
@@ -609,6 +647,7 @@ async function refreshState() {
   document.querySelector("#humidityInput").value = data.environment.humidity;
   renderDevices(data.devices);
   renderAlarms(data.alarms);
+  renderAutoFlow(data.auto_flow);
   renderAutomations(data.automations || []);
   renderScenes(data.scenes || []);
   renderMemories(data.memories || []);
@@ -842,14 +881,45 @@ document.querySelector("#updateEnvironmentButton").addEventListener("click", asy
         humidity: document.querySelector("#humidityInput").value,
       }),
     });
-    showToast(
-      result.actions.length
-        ? `环境已更新，自动执行了 ${result.actions.length} 个动作`
-        : "环境数据已更新，没有规则需要执行",
-    );
+    showToast(result.auto_flow?.summary || "环境数据已更新");
     await refreshState();
   } catch (error) {
     showToast(error.message);
+  }
+});
+
+document.querySelector("#autoFlowToggleButton").addEventListener("click", async () => {
+  const button = document.querySelector("#autoFlowToggleButton");
+  button.disabled = true;
+  try {
+    const result = await api("/api/auto-flow", {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: !Boolean(state.autoFlow?.enabled) }),
+    });
+    renderAutoFlow(result.auto_flow);
+    showToast(result.auto_flow.summary);
+    await refreshState();
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+document.querySelector("#autoFlowRunButton").addEventListener("click", async () => {
+  const button = document.querySelector("#autoFlowRunButton");
+  button.disabled = true;
+  try {
+    const result = await api("/api/auto-flow/run", { method: "POST" });
+    renderAutoFlow(result.auto_flow);
+    addMessage(result.auto_flow.summary, "assistant");
+    speakAssistant(result.auto_flow.summary);
+    showToast("AI 巡检完成");
+    await refreshState();
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    button.disabled = false;
   }
 });
 

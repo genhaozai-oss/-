@@ -6,14 +6,25 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify, request, send_from_directory
 
 from . import database
+from .autoflow import (
+    auto_flow_status,
+    handle_auto_flow_message,
+    hold_manual_control,
+    run_auto_flow,
+    set_auto_flow_enabled,
+)
 from .automations import create_rule, list_rules
 from .context import (
     handle_context_message,
     remember_result_device,
     resolve_context_device,
 )
-from .devices import set_device_capability, set_device_state
-from .home import run_comfort_rules, run_home_arrival
+from .devices import (
+    DeviceCommandError,
+    set_device_capability,
+    set_device_state,
+)
+from .home import run_home_arrival
 from .intent import handle_message
 from .learning import learn_from_result, observe_capability
 from .preferences import forget_preference, list_preferences
@@ -184,17 +195,20 @@ def _process_message_core(message, selected_device_id=None, session_id="default"
     return result
 
 
-def process_message(message, selected_device_id=None, session_id="default"):
+def _process_message(message, selected_device_id=None, session_id="default"):
     session_id = normalize_session_id(session_id)
     context_device_id = resolve_context_device(session_id, selected_device_id)
     if is_undo_request(message):
         result = undo_last_action()
+        hold_manual_control(result, "用户撤销自动操作")
         if context_device_id:
             result["context_device_id"] = context_device_id
         return result
 
     snapshot = capture_device_snapshot()
-    result = handle_context_message(message, context_device_id)
+    result = handle_auto_flow_message(message)
+    if result is None:
+        result = handle_context_message(message, context_device_id)
     if result is None:
         result = _process_message_core(
             message,
@@ -202,6 +216,15 @@ def process_message(message, selected_device_id=None, session_id="default"):
             session_id,
         )
     record_undoable(snapshot, result, message)
+    if result.get("intent") in {
+        "control_device",
+        "device_control",
+        "set_device_level",
+        "assistant",
+        "run_scene",
+        "home_arrival",
+    }:
+        hold_manual_control(result)
     learnings = learn_from_result(result)
     learned = [item for item in learnings if item["learned"]]
     if learnings:
@@ -213,6 +236,21 @@ def process_message(message, selected_device_id=None, session_id="default"):
     if remembered_device_id:
         result["context_device_id"] = remembered_device_id
     return result
+
+
+def process_message(message, selected_device_id=None, session_id="default"):
+    try:
+        return _process_message(
+            message,
+            selected_device_id,
+            session_id,
+        )
+    except DeviceCommandError as exc:
+        return {
+            "intent": "device_command_failed",
+            "reply": str(exc),
+            "actions": [],
+        }
 
 
 @api.get("/")
@@ -273,6 +311,7 @@ def state():
             "automations": list_rules(),
             "scenes": list_custom_scenes(),
             "memories": list_preferences(),
+            "auto_flow": auto_flow_status(),
         }
     )
 
@@ -402,14 +441,61 @@ def update_environment():
     if not -20 <= temperature <= 80 or not 0 <= humidity <= 100:
         return error("温湿度超出合理范围。")
 
+    snapshot = capture_device_snapshot()
     environment = database.update_environment(temperature, humidity)
-    _, actions = run_comfort_rules()
+    flow = run_auto_flow(trigger="web_sensor")
+    actions = flow["actions"]
     database.log_event(
         "sensor",
         f"温度 {temperature:.1f}℃，湿度 {humidity:.0f}%",
-        {"environment": environment, "actions": actions},
+        {
+            "environment": environment,
+            "actions": actions,
+            "auto_flow_status": flow["status"],
+        },
     )
-    return jsonify({"environment": environment, "actions": actions})
+    record_undoable(
+        snapshot,
+        {
+            "intent": "auto_flow_sensor",
+            "reply": flow["summary"],
+            "actions": actions,
+        },
+        "环境自动流",
+    )
+    return jsonify(
+        {
+            "environment": environment,
+            "actions": actions,
+            "auto_flow": flow,
+        }
+    )
+
+
+@api.patch("/api/auto-flow")
+def update_auto_flow():
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload.get("enabled"), bool):
+        return error("请提供有效的自动托管状态。")
+    return jsonify(
+        {"auto_flow": set_auto_flow_enabled(payload["enabled"])}
+    )
+
+
+@api.post("/api/auto-flow/run")
+def run_auto_flow_now():
+    snapshot = capture_device_snapshot()
+    flow = run_auto_flow(trigger="manual_button", force=True)
+    record_undoable(
+        snapshot,
+        {
+            "intent": "run_auto_flow",
+            "reply": flow["summary"],
+            "actions": flow["actions"],
+        },
+        "立即巡检",
+    )
+    return jsonify({"auto_flow": flow, "actions": flow["actions"]})
 
 
 @api.post("/api/automations")
@@ -455,10 +541,23 @@ def create_custom_scene():
 
 @api.post("/api/scenes/<int:scene_id>/run")
 def run_custom_scene(scene_id):
+    snapshot = capture_device_snapshot()
     try:
         result = run_scene(scene_id=scene_id)
     except ValueError as exc:
         return error(str(exc), 404)
+    except DeviceCommandError as exc:
+        return error(str(exc), 503)
+    record_undoable(
+        snapshot,
+        {
+            "intent": "run_scene",
+            "reply": f"网页运行场景：{result['scene']['name']}",
+            "actions": result["actions"],
+        },
+        "网页场景",
+    )
+    hold_manual_control(result, "用户运行场景")
     return jsonify(result)
 
 
@@ -516,6 +615,8 @@ def update_device(device_id):
             device = set_device_state(device_id, state)
     except sqlite3.IntegrityError:
         return error("设备名称已经存在。", 409)
+    except DeviceCommandError as exc:
+        return error(str(exc), 503)
     if not device:
         return error("设备不存在。", 404)
     database.log_event("device", f"更新设备：{device['name']}", device)
@@ -528,6 +629,17 @@ def update_device(device_id):
         },
         "网页设备控制",
     )
+    if state is not None:
+        hold_manual_control(
+            {
+                "actions": [
+                    {
+                        "device_id": device["id"],
+                        "state": device["state"],
+                    }
+                ]
+            }
+        )
     response = {"device": device}
     if payload.get("session_id"):
         response["context_device_id"] = database.remember_session_device(
@@ -548,6 +660,8 @@ def update_capability(device_id, capability):
         updated = set_device_capability(device_id, capability, value)
     except (TypeError, ValueError) as exc:
         return error(str(exc) or "能力值必须是数字。")
+    except DeviceCommandError as exc:
+        return error(str(exc), 503)
     if not database.get_device(device_id):
         return error("设备不存在。", 404)
     if not updated:
@@ -568,6 +682,16 @@ def update_capability(device_id, capability):
             "actions": [{"device_id": device_id}],
         },
         "网页能力调节",
+    )
+    hold_manual_control(
+        {
+            "actions": [
+                {
+                    "device_id": device_id,
+                    "capability": capability,
+                }
+            ]
+        }
     )
     learning = observe_capability(device_id, capability, updated["value"])
     response = {"capability": updated, "learning": learning}

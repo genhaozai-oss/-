@@ -790,6 +790,94 @@ h1 span {
   background: white;
 }
 
+.auto-flow-card {
+  margin-top: 24px;
+  overflow: hidden;
+}
+
+.auto-flow-card .soft-badge.paused {
+  color: #8b6d60;
+  background: rgba(225, 177, 154, 0.22);
+}
+
+.auto-flow-summary {
+  margin: 14px 0 20px;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.auto-flow-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.auto-flow-step {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 10px;
+  min-height: 112px;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.48);
+}
+
+.auto-flow-step.done {
+  border-color: rgba(82, 120, 103, 0.34);
+  background: rgba(217, 232, 222, 0.44);
+}
+
+.auto-flow-step.warning {
+  border-color: rgba(202, 139, 111, 0.42);
+  background: rgba(241, 219, 207, 0.46);
+}
+
+.auto-flow-step-number {
+  color: var(--sage-dark);
+  font-family: Georgia, serif;
+  font-size: 20px;
+}
+
+.auto-flow-step strong,
+.auto-flow-step small {
+  display: block;
+}
+
+.auto-flow-step small {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.auto-flow-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.auto-flow-actions button {
+  padding: 11px 18px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  color: var(--sage-dark);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.auto-flow-actions .primary-action {
+  color: white;
+  background: var(--sage-dark);
+}
+
+.auto-flow-note {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .insights-grid {
   margin-top: 24px;
 }
@@ -988,6 +1076,10 @@ h1 span {
   .automation-rule {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .auto-flow-steps {
+    grid-template-columns: 1fr;
   }
 
   .automation-controls button {

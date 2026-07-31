@@ -111,66 +111,119 @@ def _condition_matches(rule, environment):
     return current < rule["threshold"]
 
 
-def run_rules(environment=None):
+def plan_rules(environment=None):
     environment = environment or database.get_environment()
-    actions = []
+    plans = []
+    claimed_device_ids = set()
     for rule in database.list_automation_rules(enabled_only=True):
         if not _condition_matches(rule, environment):
             continue
         device = database.get_device(rule["device_id"])
-        if not device or (not device["online"] and not device["is_virtual"]):
+        if not device or device["id"] in claimed_device_ids:
             continue
-
-        rule_actions = []
+        claimed_device_ids.add(device["id"])
+        base = {
+            "device_id": device["id"],
+            "device_name": device["name"],
+            "device_type": device["type"],
+            "is_virtual": bool(device["is_virtual"]),
+            "online": bool(device["online"]),
+            "source": "automation",
+            "automation_rule_id": rule["id"],
+        }
         if rule["action"] in {"on", "off"}:
             if device["state"] != rule["action"]:
-                updated = set_device_state(device["id"], rule["action"])
-                rule_actions.append(
+                plans.append(
                     {
-                        "device_id": device["id"],
-                        "device_name": updated["name"],
+                        **base,
+                        "operation": "state",
                         "state": rule["action"],
-                        "automation_rule_id": rule["id"],
-                        "is_virtual": bool(updated["is_virtual"]),
                     }
                 )
         else:
             if rule["value"] > 0 and device["state"] == "off":
-                updated = set_device_state(device["id"], "on")
-                rule_actions.append(
+                plans.append(
                     {
-                        "device_id": device["id"],
-                        "device_name": updated["name"],
+                        **base,
+                        "operation": "state",
                         "state": "on",
-                        "automation_rule_id": rule["id"],
-                        "is_virtual": bool(updated["is_virtual"]),
                     }
                 )
             capability = database.get_device_capability(
                 device["id"], rule["capability"]
             )
             if capability and capability["value"] != rule["value"]:
-                updated = set_device_capability(
-                    device["id"], rule["capability"], rule["value"]
-                )
-                rule_actions.append(
+                plans.append(
                     {
-                        "device_id": device["id"],
-                        "device_name": device["name"],
+                        **base,
+                        "operation": "capability",
                         "capability": rule["capability"],
-                        "value": updated["value"],
-                        "unit": updated["unit"],
-                        "automation_rule_id": rule["id"],
-                        "is_virtual": bool(device["is_virtual"]),
+                        "value": rule["value"],
+                        "unit": capability["unit"],
                     }
                 )
+    return plans
 
-        if rule_actions:
-            database.update_automation_rule(rule["id"], triggered=True)
-            database.log_event(
-                "automation",
-                f"执行规则：{describe_rule(rule)}",
-                {"rule_id": rule["id"], "actions": rule_actions},
+
+def run_rules(environment=None, excluded_device_ids=None):
+    environment = environment or database.get_environment()
+    excluded_device_ids = excluded_device_ids or set()
+    actions = []
+    actions_by_rule = {}
+    for plan in plan_rules(environment):
+        device = database.get_device(plan["device_id"])
+        if (
+            not device
+            or device["id"] in excluded_device_ids
+            or (not device["online"] and not device["is_virtual"])
+        ):
+            continue
+        if (
+            not device["is_virtual"]
+            and device["type"] in {"humidifier", "dehumidifier"}
+            and (
+                plan["operation"] == "capability"
+                or plan.get("state") == "on"
             )
-            actions.extend(rule_actions)
+        ):
+            continue
+
+        if plan["operation"] == "state":
+            updated = set_device_state(device["id"], plan["state"])
+            action = {
+                "device_id": device["id"],
+                "device_name": updated["name"],
+                "state": plan["state"],
+                "automation_rule_id": plan["automation_rule_id"],
+                "is_virtual": bool(updated["is_virtual"]),
+            }
+        else:
+            updated = set_device_capability(
+                device["id"],
+                plan["capability"],
+                plan["value"],
+            )
+            action = {
+                "device_id": device["id"],
+                "device_name": device["name"],
+                "capability": plan["capability"],
+                "value": updated["value"],
+                "unit": updated["unit"],
+                "automation_rule_id": plan["automation_rule_id"],
+                "is_virtual": bool(device["is_virtual"]),
+            }
+        actions.append(action)
+        actions_by_rule.setdefault(
+            plan["automation_rule_id"],
+            [],
+        ).append(action)
+
+    for rule_id, rule_actions in actions_by_rule.items():
+        rule = database.get_automation_rule(rule_id)
+        database.update_automation_rule(rule_id, triggered=True)
+        database.log_event(
+            "automation",
+            f"执行规则：{describe_rule(rule)}",
+            {"rule_id": rule_id, "actions": rule_actions},
+        )
     return actions

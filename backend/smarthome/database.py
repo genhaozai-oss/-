@@ -5,6 +5,9 @@ from datetime import datetime, timedelta
 from flask import current_app, g
 
 
+MAX_EVENT_ROWS = 2000
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS devices (
     id TEXT PRIMARY KEY,
@@ -97,6 +100,13 @@ CREATE TABLE IF NOT EXISTS custom_scenes (
     actions TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS device_manual_overrides (
+    device_id TEXT PRIMARY KEY,
+    until_at TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
 );
 """
 
@@ -667,6 +677,53 @@ def set_settings(values):
     return get_settings()
 
 
+def set_device_manual_override(device_id, minutes=30, reason="用户手动控制"):
+    if not get_device(device_id):
+        return None
+    created_at = now_iso()
+    until_at = (
+        datetime.now().astimezone() + timedelta(minutes=minutes)
+    ).isoformat(timespec="seconds")
+    db = get_db()
+    db.execute(
+        """
+        INSERT INTO device_manual_overrides
+            (device_id, until_at, reason, created_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(device_id) DO UPDATE SET
+            until_at = excluded.until_at,
+            reason = excluded.reason,
+            created_at = excluded.created_at
+        """,
+        (device_id, until_at, reason, created_at),
+    )
+    db.commit()
+    return {
+        "device_id": device_id,
+        "until_at": until_at,
+        "reason": reason,
+    }
+
+
+def list_active_manual_overrides():
+    timestamp = now_iso()
+    db = get_db()
+    db.execute(
+        "DELETE FROM device_manual_overrides WHERE until_at <= ?",
+        (timestamp,),
+    )
+    rows = db.execute(
+        """
+        SELECT device_manual_overrides.*, devices.name AS device_name
+        FROM device_manual_overrides
+        LEFT JOIN devices ON devices.id = device_manual_overrides.device_id
+        ORDER BY until_at
+        """
+    ).fetchall()
+    db.commit()
+    return rows_to_dicts(rows)
+
+
 def create_alarm(label, scheduled_at):
     db = get_db()
     cursor = db.execute(
@@ -740,6 +797,15 @@ def log_event(kind, message, payload=None):
             now_iso(),
         ),
     )
+    db.execute(
+        """
+        DELETE FROM events
+        WHERE id <= (
+            SELECT COALESCE(MAX(id) - ?, 0) FROM events
+        )
+        """,
+        (MAX_EVENT_ROWS,),
+    )
     db.commit()
     return cursor.lastrowid
 
@@ -757,6 +823,23 @@ def list_events(limit=20):
     for event in events:
         event["payload"] = json.loads(event["payload"])
     return events
+
+
+def latest_event(kind):
+    row = get_db().execute(
+        """
+        SELECT * FROM events
+        WHERE kind = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (kind,),
+    ).fetchone()
+    if not row:
+        return None
+    event = dict(row)
+    event["payload"] = json.loads(event["payload"])
+    return event
 
 
 def add_conversation_message(session_id, role, content, keep=12):

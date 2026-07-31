@@ -18,6 +18,13 @@ def set_type_state(device_type, state, excluded_device_ids=None):
         if (
             device["type"] != device_type
             or device["id"] in excluded_device_ids
+            or (not device["online"] and not device["is_virtual"])
+        ):
+            continue
+        if (
+            state == "on"
+            and not device["is_virtual"]
+            and device["type"] in {"humidifier", "dehumidifier"}
         ):
             continue
         if device["state"] == state:
@@ -34,29 +41,42 @@ def set_type_state(device_type, state, excluded_device_ids=None):
     return actions
 
 
-def run_comfort_rules():
+def run_comfort_rules(thresholds=None, excluded_device_ids=None):
     environment = database.get_environment()
     temperature = environment["temperature"]
     humidity = environment["humidity"]
     actions = []
-    managed = database.automation_managed_device_ids()
+    thresholds = thresholds or {
+        "fan_on": 28,
+        "fan_off": 25,
+        "humidifier_on": 40,
+        "humidity_safe_low": 45,
+        "humidity_safe_high": 65,
+        "dehumidifier_on": 70,
+    }
+    excluded_device_ids = excluded_device_ids or set()
+    managed = database.automation_managed_device_ids() | excluded_device_ids
 
-    if temperature >= 28:
+    if temperature >= thresholds["fan_on"]:
         actions.extend(set_type_state("fan", "on", managed))
-    elif temperature <= 25:
+    elif temperature <= thresholds["fan_off"]:
         actions.extend(set_type_state("fan", "off", managed))
 
-    if humidity < 40:
+    if humidity < thresholds["humidifier_on"]:
         actions.extend(set_type_state("dehumidifier", "off", managed))
         actions.extend(set_type_state("humidifier", "on", managed))
-    elif humidity > 70:
+    elif humidity > thresholds["dehumidifier_on"]:
         actions.extend(set_type_state("humidifier", "off", managed))
         actions.extend(set_type_state("dehumidifier", "on", managed))
-    elif 45 <= humidity <= 65:
+    elif (
+        thresholds["humidity_safe_low"]
+        <= humidity
+        <= thresholds["humidity_safe_high"]
+    ):
         actions.extend(set_type_state("humidifier", "off", managed))
         actions.extend(set_type_state("dehumidifier", "off", managed))
 
-    actions.extend(run_rules(environment))
+    actions.extend(run_rules(environment, excluded_device_ids))
     return environment, actions
 
 
@@ -113,8 +133,14 @@ def describe_actions(environment, actions):
 
 
 def run_home_arrival():
-    environment, actions = run_comfort_rules()
+    from .autoflow import run_auto_flow
+
+    flow = run_auto_flow(trigger="home_arrival", force=True)
+    environment = flow["environment"]
+    actions = flow["actions"]
     action_text = describe_actions(environment, actions)
+    if flow["status"] in {"blocked", "partial", "stale"}:
+        action_text += f"；{flow['summary']}"
     reply = (
         "辛苦啦，回家的路上注意安全。"
         f"家里现在 {environment['temperature']:.1f}℃，"
@@ -124,11 +150,16 @@ def run_home_arrival():
     database.log_event(
         "scene",
         "执行准备回家场景",
-        {"environment": environment, "actions": actions},
+        {
+            "environment": environment,
+            "actions": actions,
+            "auto_flow_status": flow["status"],
+        },
     )
     return {
         "intent": "home_arrival",
         "reply": reply,
         "actions": actions,
         "environment": environment,
+        "auto_flow": flow,
     }

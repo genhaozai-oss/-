@@ -4,7 +4,8 @@ from urllib.parse import urlparse
 import paho.mqtt.client as mqtt
 
 from . import database
-from .home import run_comfort_rules
+from .autoflow import run_auto_flow
+from .undo import capture_device_snapshot, record_undoable
 
 
 ENVIRONMENT_TOPIC = "smarthome/sensor/environment"
@@ -109,12 +110,27 @@ class MqttBridge:
         humidity = float(data["humidity"])
         if not -20 <= temperature <= 80 or not 0 <= humidity <= 100:
             raise ValueError("温湿度超出合理范围")
-        database.update_environment(temperature, humidity)
-        _, actions = run_comfort_rules()
+        snapshot = capture_device_snapshot()
+        environment = database.update_environment(temperature, humidity)
+        flow = run_auto_flow(trigger="mqtt_sensor")
+        actions = flow["actions"]
         database.log_event(
             "sensor",
             f"实体传感器：{temperature:.1f}℃，{humidity:.0f}%",
-            {"actions": actions},
+            {
+                "environment": environment,
+                "actions": actions,
+                "auto_flow_status": flow["status"],
+            },
+        )
+        record_undoable(
+            snapshot,
+            {
+                "intent": "auto_flow_sensor",
+                "reply": flow["summary"],
+                "actions": actions,
+            },
+            "实体传感器自动流",
         )
 
     def _handle_controller_status(self, payload):
