@@ -876,6 +876,10 @@ h1 span {
   background: #6f8799;
 }
 
+.event-kind.learning {
+  background: #8f7caa;
+}
+
 .event-item strong {
   margin-bottom: 3px;
   font-size: 12px;

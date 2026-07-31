@@ -307,14 +307,22 @@ function renderDevices(devices) {
       input.addEventListener("input", () => updateOutput(input.value));
       input.addEventListener("change", async () => {
         try {
-          await api(
+          const result = await api(
             `/api/devices/${device.id}/capabilities/${capability.capability}`,
             {
               method: "PATCH",
               body: JSON.stringify({ value: Number(input.value) }),
             },
           );
-          showToast(`${device.name}${capability.display_name}已更新`);
+          if (result.learning?.learned) {
+            showToast(result.learning.message);
+          } else if (result.learning) {
+            showToast(
+              `正在学习${capability.display_name}习惯：${result.learning.progress}/${result.learning.required}`,
+            );
+          } else {
+            showToast(`${device.name}${capability.display_name}已更新`);
+          }
           await refreshState();
         } catch (error) {
           showToast(error.message);
@@ -530,6 +538,7 @@ function renderEvents(events) {
     sensor: "环境",
     device: "设备",
     memory: "记忆",
+    learning: "学习",
     alarm: "闹钟",
     undoable: "可撤销",
     undo: "已撤销",

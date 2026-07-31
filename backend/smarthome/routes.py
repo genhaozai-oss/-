@@ -10,6 +10,7 @@ from .automations import create_rule, list_rules
 from .devices import set_device_capability, set_device_state
 from .home import run_comfort_rules, run_home_arrival
 from .intent import handle_message
+from .learning import learn_from_result, observe_capability
 from .preferences import forget_preference, list_preferences
 from .scenes import (
     list_scenes as list_custom_scenes,
@@ -189,6 +190,13 @@ def process_message(message, selected_device_id=None, session_id="default"):
         session_id,
     )
     record_undoable(snapshot, result, message)
+    learnings = learn_from_result(result)
+    learned = [item for item in learnings if item["learned"]]
+    if learnings:
+        result["learning"] = learnings
+    if learned:
+        result["reply"] += " " + " ".join(item["message"] for item in learned)
+        result["memories"] = list_preferences()
     return result
 
 
@@ -540,7 +548,8 @@ def update_capability(device_id, capability):
         },
         "网页能力调节",
     )
-    return jsonify({"capability": updated})
+    learning = observe_capability(device_id, capability, updated["value"])
+    return jsonify({"capability": updated, "learning": learning})
 
 
 @api.get("/api/weather")

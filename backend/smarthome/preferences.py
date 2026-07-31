@@ -58,6 +58,9 @@ def remember_preference(name, value):
             f"{definition['maximum']}{definition['unit']} 之间。"
         )
     database.set_user_preference(name, f"{numeric_value:g}")
+    from .learning import reset_learning
+
+    reset_learning(name)
     return {
         "name": name,
         "label": definition["label"],
@@ -73,4 +76,7 @@ def forget_preference(name):
         raise ValueError("这种偏好暂时不支持。")
     if not database.delete_user_preference(name):
         raise ValueError(f"还没有记住你的{definition['label']}。")
+    from .learning import reset_learning
+
+    reset_learning(name)
     return definition["label"]
