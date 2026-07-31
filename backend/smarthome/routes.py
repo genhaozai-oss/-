@@ -7,6 +7,11 @@ from flask import Blueprint, current_app, jsonify, request, send_from_directory
 
 from . import database
 from .automations import create_rule, list_rules
+from .context import (
+    handle_context_message,
+    remember_result_device,
+    resolve_context_device,
+)
 from .devices import set_device_capability, set_device_state
 from .home import run_comfort_rules, run_home_arrival
 from .intent import handle_message
@@ -180,15 +185,22 @@ def _process_message_core(message, selected_device_id=None, session_id="default"
 
 
 def process_message(message, selected_device_id=None, session_id="default"):
+    session_id = normalize_session_id(session_id)
+    context_device_id = resolve_context_device(session_id, selected_device_id)
     if is_undo_request(message):
-        return undo_last_action()
+        result = undo_last_action()
+        if context_device_id:
+            result["context_device_id"] = context_device_id
+        return result
 
     snapshot = capture_device_snapshot()
-    result = _process_message_core(
-        message,
-        selected_device_id,
-        session_id,
-    )
+    result = handle_context_message(message, context_device_id)
+    if result is None:
+        result = _process_message_core(
+            message,
+            context_device_id,
+            session_id,
+        )
     record_undoable(snapshot, result, message)
     learnings = learn_from_result(result)
     learned = [item for item in learnings if item["learned"]]
@@ -197,6 +209,9 @@ def process_message(message, selected_device_id=None, session_id="default"):
     if learned:
         result["reply"] += " " + " ".join(item["message"] for item in learned)
         result["memories"] = list_preferences()
+    remembered_device_id = remember_result_device(session_id, result)
+    if remembered_device_id:
+        result["context_device_id"] = remembered_device_id
     return result
 
 
@@ -513,7 +528,13 @@ def update_device(device_id):
         },
         "网页设备控制",
     )
-    return jsonify({"device": device})
+    response = {"device": device}
+    if payload.get("session_id"):
+        response["context_device_id"] = database.remember_session_device(
+            normalize_session_id(payload["session_id"]),
+            device["id"],
+        )
+    return jsonify(response)
 
 
 @api.patch("/api/devices/<device_id>/capabilities/<capability>")
@@ -549,7 +570,13 @@ def update_capability(device_id, capability):
         "网页能力调节",
     )
     learning = observe_capability(device_id, capability, updated["value"])
-    return jsonify({"capability": updated, "learning": learning})
+    response = {"capability": updated, "learning": learning}
+    if payload.get("session_id"):
+        response["context_device_id"] = database.remember_session_device(
+            normalize_session_id(payload["session_id"]),
+            device_id,
+        )
+    return jsonify(response)
 
 
 @api.get("/api/weather")

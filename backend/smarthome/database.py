@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from flask import current_app, g
 
@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 
 CREATE INDEX IF NOT EXISTS idx_conversation_session
 ON conversation_messages(session_id, id);
+
+CREATE TABLE IF NOT EXISTS assistant_context (
+    session_id TEXT PRIMARY KEY,
+    last_device_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS device_capabilities (
     device_id TEXT NOT NULL,
@@ -789,3 +795,39 @@ def list_conversation_messages(session_id, limit=12):
         (session_id, limit),
     ).fetchall()
     return [dict(row) for row in reversed(rows)]
+
+
+def remember_session_device(session_id, device_id):
+    if not get_device(device_id):
+        return None
+    get_db().execute(
+        """
+        INSERT INTO assistant_context (session_id, last_device_id, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+            last_device_id = excluded.last_device_id,
+            updated_at = excluded.updated_at
+        """,
+        (session_id, device_id, now_iso()),
+    )
+    get_db().commit()
+    return device_id
+
+
+def get_session_device(session_id, max_age_minutes=30):
+    row = get_db().execute(
+        """
+        SELECT last_device_id, updated_at
+        FROM assistant_context
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    if not row:
+        return None
+    updated_at = datetime.fromisoformat(row["updated_at"])
+    if datetime.now().astimezone() - updated_at > timedelta(
+        minutes=max_age_minutes
+    ):
+        return None
+    return row["last_device_id"] if get_device(row["last_device_id"]) else None

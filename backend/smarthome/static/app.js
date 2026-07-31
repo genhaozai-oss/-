@@ -9,6 +9,7 @@ window.localStorage.setItem("smarthome_session_id", sessionId);
 
 const state = {
   selectedDeviceId: null,
+  contextDeviceId: null,
   devices: [],
   weatherUpdatedAt: 0,
   voiceReplyEnabled:
@@ -248,11 +249,24 @@ function addMessage(text, role) {
 
 function renderDevices(devices) {
   state.devices = devices;
+  if (!devices.some((device) => device.id === state.selectedDeviceId)) {
+    state.selectedDeviceId = null;
+  }
+  if (!devices.some((device) => device.id === state.contextDeviceId)) {
+    state.contextDeviceId = null;
+  }
+  const activeDeviceId = state.selectedDeviceId || state.contextDeviceId;
+  const selectedDevice = devices.find(
+    (device) => device.id === activeDeviceId,
+  );
+  document.querySelector("#selectedDeviceText").textContent = selectedDevice
+    ? `当前设备：${selectedDevice.name}`
+    : "当前未选择设备";
   const container = document.querySelector("#deviceList");
   container.replaceChildren();
   for (const device of devices) {
     const element = document.createElement("div");
-    element.className = `device${state.selectedDeviceId === device.id ? " selected" : ""}`;
+    element.className = `device${activeDeviceId === device.id ? " selected" : ""}`;
     element.innerHTML = `
       <span class="device-icon">${icons[device.type] || "⌁"}</span>
       <span>
@@ -265,16 +279,21 @@ function renderDevices(devices) {
     element.querySelector("strong").textContent = device.name;
     element.addEventListener("click", () => {
       state.selectedDeviceId = device.id;
-      document.querySelector("#selectedDeviceText").textContent = `已选择：${device.name}`;
+      state.contextDeviceId = null;
       renderDevices(state.devices);
     });
     element.querySelector(".switch").addEventListener("click", async (event) => {
       event.stopPropagation();
       try {
-        await api(`/api/devices/${device.id}`, {
+        const result = await api(`/api/devices/${device.id}`, {
           method: "PATCH",
-          body: JSON.stringify({ state: device.state === "on" ? "off" : "on" }),
+          body: JSON.stringify({
+            state: device.state === "on" ? "off" : "on",
+            session_id: sessionId,
+          }),
         });
+        state.selectedDeviceId = null;
+        state.contextDeviceId = result.context_device_id || device.id;
         await refreshState();
       } catch (error) {
         showToast(error.message);
@@ -311,9 +330,14 @@ function renderDevices(devices) {
             `/api/devices/${device.id}/capabilities/${capability.capability}`,
             {
               method: "PATCH",
-              body: JSON.stringify({ value: Number(input.value) }),
+              body: JSON.stringify({
+                value: Number(input.value),
+                session_id: sessionId,
+              }),
             },
           );
+          state.selectedDeviceId = null;
+          state.contextDeviceId = result.context_device_id || device.id;
           if (result.learning?.learned) {
             showToast(result.learning.message);
           } else if (result.learning) {
@@ -616,6 +640,10 @@ async function sendMessage(message) {
     });
     addMessage(result.reply, "assistant");
     speakAssistant(result.reply);
+    if (result.context_device_id) {
+      state.selectedDeviceId = null;
+      state.contextDeviceId = result.context_device_id;
+    }
     if (result.intent === "home_arrival") showSceneBanner();
     await refreshState();
   } catch (error) {
