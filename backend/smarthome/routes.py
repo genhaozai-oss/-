@@ -28,6 +28,10 @@ from .home import run_home_arrival
 from .intent import handle_message
 from .learning import learn_from_result, observe_capability
 from .preferences import forget_preference, list_preferences
+from .proactive import (
+    handle_proactive_message,
+    set_enabled as set_proactive_enabled,
+)
 from .scenes import (
     list_scenes as list_custom_scenes,
     run_scene,
@@ -206,7 +210,12 @@ def _process_message(message, selected_device_id=None, session_id="default"):
         return result
 
     snapshot = capture_device_snapshot()
-    result = handle_auto_flow_message(message)
+    result = handle_proactive_message(
+        message,
+        current_app.extensions["proactive_monitor"],
+    )
+    if result is None:
+        result = handle_auto_flow_message(message)
     if result is None:
         result = handle_context_message(message, context_device_id)
     if result is None:
@@ -305,13 +314,18 @@ def state():
             "environment": database.get_environment(),
             "devices": database.list_devices(),
             "alarms": database.list_alarms(),
-            "due_alarms": database.due_alarms(),
+            "due_alarms": [],
             "settings": database.get_settings(),
             "events": database.list_events(8),
             "automations": list_rules(),
             "scenes": list_custom_scenes(),
             "memories": list_preferences(),
             "auto_flow": auto_flow_status(),
+            "notifications": database.list_notifications(20),
+            "unread_notifications": database.unread_notification_count(),
+            "proactive": current_app.extensions[
+                "proactive_monitor"
+            ].status(),
         }
     )
 
@@ -496,6 +510,73 @@ def run_auto_flow_now():
         "立即巡检",
     )
     return jsonify({"auto_flow": flow, "actions": flow["actions"]})
+
+
+@api.patch("/api/proactive")
+def update_proactive():
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload.get("enabled"), bool):
+        return error("请提供有效的主动提醒状态。")
+    set_proactive_enabled(payload["enabled"])
+    return jsonify(
+        {
+            "proactive": current_app.extensions[
+                "proactive_monitor"
+            ].status()
+        }
+    )
+
+
+@api.post("/api/proactive/run")
+def run_proactive_now():
+    result = current_app.extensions["proactive_monitor"].run_once(
+        force=True,
+        force_weather=True,
+    )
+    return jsonify(
+        {
+            "result": result,
+            "proactive": current_app.extensions[
+                "proactive_monitor"
+            ].status(),
+        }
+    )
+
+
+@api.post("/api/notifications/claim")
+def claim_notification():
+    return jsonify({"notification": database.claim_notification()})
+
+
+@api.post("/api/notifications/<int:notification_id>/ack")
+def acknowledge_notification(notification_id):
+    payload = request.get_json(silent=True) or {}
+    claim_token = str(payload.get("claim_token") or "").strip()
+    if not claim_token:
+        return error("提醒确认令牌不能为空。")
+    notification = database.acknowledge_notification(
+        notification_id,
+        claim_token,
+    )
+    if not notification:
+        return error("提醒领取已过期，请等待重新投递。", 409)
+    return jsonify({"notification": notification})
+
+
+@api.patch("/api/notifications/<int:notification_id>")
+def read_notification(notification_id):
+    payload = request.get_json(silent=True) or {}
+    if payload.get("read") is not True:
+        return error("请提供有效的已读状态。")
+    notification = database.mark_notification_read(notification_id)
+    if not notification:
+        return error("提醒不存在。", 404)
+    return jsonify({"notification": notification})
+
+
+@api.post("/api/notifications/read-all")
+def read_all_notifications():
+    return jsonify({"updated": database.mark_all_notifications_read()})
 
 
 @api.post("/api/automations")
@@ -747,6 +828,7 @@ def location():
             "weather_location_id": location_id,
         }
     )
+    current_app.extensions["proactive_monitor"].invalidate_weather_schedule()
     return jsonify({"settings": settings})
 
 

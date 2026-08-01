@@ -1,3 +1,4 @@
+import atexit
 import os
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from . import database
 from .agent import SmartHomeAgent
 from .llm import LlmInterpreter
 from .mqtt_bridge import MqttBridge
+from .proactive import ProactiveMonitor
 from .routes import api
 from .tts import SpeechSynthesizer
 from .voice import SpeechRecognizer
@@ -31,6 +33,7 @@ def create_app(test_config=None):
         DATABASE=str(default_db),
         WEATHER_TIMEOUT_SECONDS=5,
         WEATHER_CACHE_SECONDS=600,
+        WEATHER_FAILURE_CACHE_SECONDS=10,
         WEATHER_API_HOST=os.getenv("SMARTHOME_WEATHER_API_HOST", ""),
         WEATHER_API_KEY=os.getenv("SMARTHOME_WEATHER_API_KEY", ""),
         MQTT_ENABLED=os.getenv("SMARTHOME_MQTT_ENABLED") == "1",
@@ -76,6 +79,12 @@ def create_app(test_config=None):
             "SMARTHOME_DOUBAO_TTS_VOICE",
             "zh_female_vv_uranus_bigtts",
         ),
+        PROACTIVE_MONITOR_ENABLED=(
+            os.getenv("SMARTHOME_PROACTIVE_ENABLED", "1") != "0"
+        ),
+        PROACTIVE_POLL_SECONDS=5,
+        PROACTIVE_WEATHER_SECONDS=30 * 60,
+        PROACTIVE_WEATHER_RETRY_SECONDS=60,
         MAX_CONTENT_LENGTH=7 * 1024 * 1024,
         TESTING=False,
     )
@@ -94,11 +103,25 @@ def create_app(test_config=None):
     app.extensions["assistant_agent"] = SmartHomeAgent(llm_interpreter)
     app.extensions["speech_recognizer"] = SpeechRecognizer(app)
     app.extensions["speech_synthesizer"] = SpeechSynthesizer(app)
+    proactive_monitor = ProactiveMonitor(app)
+    app.extensions["proactive_monitor"] = proactive_monitor
 
     with app.app_context():
         database.init_db()
 
     if app.config["MQTT_ENABLED"] and not app.config["TESTING"]:
         mqtt_bridge.start()
+
+    debug_parent = (
+        os.getenv("FLASK_DEBUG") == "1"
+        and os.getenv("WERKZEUG_RUN_MAIN") != "true"
+    )
+    if (
+        app.config["PROACTIVE_MONITOR_ENABLED"]
+        and not app.config["TESTING"]
+        and not debug_parent
+    ):
+        proactive_monitor.start()
+        atexit.register(proactive_monitor.stop)
 
     return app

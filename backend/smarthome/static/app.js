@@ -12,6 +12,7 @@ const state = {
   contextDeviceId: null,
   devices: [],
   autoFlow: null,
+  proactive: null,
   weatherUpdatedAt: 0,
   voiceReplyEnabled:
     window.localStorage.getItem(voiceReplyStorageKey) === "1",
@@ -27,6 +28,10 @@ const icons = {
 let activeSpeechUtterance = null;
 let activeSpeechAudio = null;
 let speechRequestId = 0;
+let systemSpeechWatchdog = null;
+let notificationClaimInFlight = false;
+let refreshStatePromise = null;
+let weatherRequestPromise = null;
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -65,6 +70,10 @@ function speechSynthesisSupported() {
 function stopSpeaking() {
   if (speechSynthesisSupported()) window.speechSynthesis.cancel();
   activeSpeechUtterance = null;
+  if (systemSpeechWatchdog) {
+    window.clearTimeout(systemSpeechWatchdog);
+    systemSpeechWatchdog = null;
+  }
   if (activeSpeechAudio) {
     activeSpeechAudio.pause();
     activeSpeechAudio.removeAttribute("src");
@@ -95,10 +104,28 @@ function speakWithSystemVoice(spokenText) {
   utterance.rate = 1.05;
   utterance.pitch = 1.05;
   activeSpeechUtterance = utterance;
-  utterance.addEventListener("end", () => {
-    if (activeSpeechUtterance === utterance) activeSpeechUtterance = null;
-  });
-  window.speechSynthesis.speak(utterance);
+  const finish = () => {
+    if (activeSpeechUtterance !== utterance) return;
+    activeSpeechUtterance = null;
+    if (systemSpeechWatchdog) {
+      window.clearTimeout(systemSpeechWatchdog);
+      systemSpeechWatchdog = null;
+    }
+  };
+  utterance.addEventListener("end", finish);
+  utterance.addEventListener("error", finish);
+  try {
+    window.speechSynthesis.speak(utterance);
+  } catch (_error) {
+    finish();
+    return false;
+  }
+  systemSpeechWatchdog = window.setTimeout(() => {
+    if (activeSpeechUtterance === utterance) {
+      window.speechSynthesis.cancel();
+      finish();
+    }
+  }, Math.min(120000, Math.max(10000, spokenText.length * 500)));
   return true;
 }
 
@@ -387,6 +414,136 @@ function renderAlarms(alarms) {
   }
 }
 
+function notificationIcon(kind) {
+  if (kind === "alarm") return "铃";
+  if (kind === "sensor") return "感";
+  if (kind === "weather_warning") return "警";
+  return "天";
+}
+
+function updateDesktopNotificationButton() {
+  const button = document.querySelector("#desktopNotificationButton");
+  if (!("Notification" in window)) {
+    button.textContent = "浏览器不支持桌面提醒";
+    button.disabled = true;
+    return;
+  }
+  const labels = {
+    granted: "桌面提醒：已开启",
+    denied: "桌面提醒：已拒绝",
+    default: "开启桌面提醒",
+  };
+  button.textContent = labels[window.Notification.permission];
+  button.disabled = window.Notification.permission === "denied";
+}
+
+async function requestDesktopNotifications() {
+  if (!("Notification" in window)) return;
+  const permission = await window.Notification.requestPermission();
+  updateDesktopNotificationButton();
+  showToast(
+    permission === "granted"
+      ? "桌面提醒已开启"
+      : "未获得桌面提醒权限，站内提醒仍然有效",
+  );
+}
+
+function renderNotifications(notifications, unreadCount, proactive) {
+  state.proactive = proactive;
+  const container = document.querySelector("#notificationList");
+  const badge = document.querySelector("#notificationUnreadBadge");
+  const proactiveBadge = document.querySelector("#proactiveBadge");
+  const summary = document.querySelector("#proactiveSummary");
+  const toggle = document.querySelector("#proactiveToggleButton");
+
+  badge.textContent = `${unreadCount} 条未读`;
+  proactiveBadge.textContent = proactive.enabled ? "主动提醒：开启" : "主动提醒：暂停";
+  proactiveBadge.classList.toggle("paused", !proactive.enabled);
+  toggle.textContent = proactive.enabled ? "暂停主动提醒" : "开启主动提醒";
+  summary.textContent = proactive.enabled
+    ? proactive.running
+      ? `后台正在持续检查${proactive.last_run_at ? `，最近检查：${new Date(proactive.last_run_at).toLocaleString("zh-CN")}` : ""}`
+      : "主动提醒已开启，后台守护器当前未运行。"
+    : "天气和传感器主动提醒已暂停，闹钟仍会按时检查。";
+
+  container.replaceChildren();
+  if (!notifications.length) {
+    container.innerHTML = '<p class="empty-state">还没有主动提醒。闹钟到期、传感器长时间未更新或天气有风险时会显示在这里。</p>';
+    return;
+  }
+  for (const notification of notifications) {
+    const element = document.createElement("article");
+    element.className = `notification-item${notification.read_at ? " read" : ""}`;
+    const icon = document.createElement("span");
+    icon.className = "notification-icon";
+    icon.textContent = notificationIcon(notification.kind);
+    const text = document.createElement("span");
+    const title = document.createElement("strong");
+    title.textContent = notification.title;
+    const message = document.createElement("p");
+    message.textContent = notification.message;
+    const time = document.createElement("small");
+    time.textContent = new Date(notification.created_at).toLocaleString("zh-CN");
+    text.append(title, message, time);
+    element.append(icon, text);
+    if (!notification.read_at) {
+      const read = document.createElement("button");
+      read.textContent = "已读";
+      read.ariaLabel = `将${notification.title}标记为已读`;
+      read.addEventListener("click", async () => {
+        await api(`/api/notifications/${notification.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ read: true }),
+        });
+        await refreshState();
+      });
+      element.append(read);
+    }
+    container.append(element);
+  }
+}
+
+async function claimNotification() {
+  if (
+    document.visibilityState !== "visible" ||
+    notificationClaimInFlight ||
+    activeSpeechAudio ||
+    activeSpeechUtterance
+  ) {
+    return;
+  }
+  notificationClaimInFlight = true;
+  try {
+    const result = await api("/api/notifications/claim", { method: "POST" });
+    const notification = result.notification;
+    if (!notification) return;
+    addMessage(notification.message, "assistant");
+    showToast(notification.title);
+    await speakAssistant(notification.message, {
+      force: notification.kind === "alarm",
+    });
+    if (
+      "Notification" in window &&
+      window.Notification.permission === "granted"
+    ) {
+      try {
+        new window.Notification(notification.title, {
+          body: notification.message,
+          tag: notification.dedupe_key,
+        });
+      } catch (_error) {
+        // 页面内提醒已经显示，桌面通知失败不影响确认。
+      }
+    }
+    await api(`/api/notifications/${notification.id}/ack`, {
+      method: "POST",
+      body: JSON.stringify({ claim_token: notification.claim_token }),
+    });
+  } finally {
+    notificationClaimInFlight = false;
+  }
+}
+
 function renderAutomations(automations) {
   const container = document.querySelector("#automationList");
   container.replaceChildren();
@@ -599,6 +756,7 @@ function renderEvents(events) {
     device: "设备",
     memory: "记忆",
     learning: "学习",
+    notification: "提醒",
     alarm: "闹钟",
     undoable: "可撤销",
     undo: "已撤销",
@@ -630,16 +788,26 @@ async function refreshWeather(settings) {
     locationInput.value = settings.location_name || "";
   }
   if (Date.now() - state.weatherUpdatedAt < 10 * 60 * 1000) return;
+  if (weatherRequestPromise) return weatherRequestPromise;
+  weatherRequestPromise = (async () => {
+    try {
+      const weather = await api("/api/weather");
+      document.querySelector("#weatherSummary").textContent = weather.summary;
+      state.weatherUpdatedAt = weather.available
+        ? Date.now()
+        : Date.now() - 9 * 60 * 1000;
+    } catch (error) {
+      document.querySelector("#weatherSummary").textContent = error.message;
+    }
+  })();
   try {
-    const weather = await api("/api/weather");
-    document.querySelector("#weatherSummary").textContent = weather.summary;
-    state.weatherUpdatedAt = Date.now();
-  } catch (error) {
-    document.querySelector("#weatherSummary").textContent = error.message;
+    await weatherRequestPromise;
+  } finally {
+    weatherRequestPromise = null;
   }
 }
 
-async function refreshState() {
+async function refreshStateOnce() {
   const data = await api("/api/state");
   document.querySelector("#temperature").textContent = data.environment.temperature.toFixed(1);
   document.querySelector("#humidity").textContent = Math.round(data.environment.humidity);
@@ -647,22 +815,28 @@ async function refreshState() {
   document.querySelector("#humidityInput").value = data.environment.humidity;
   renderDevices(data.devices);
   renderAlarms(data.alarms);
+  renderNotifications(
+    data.notifications || [],
+    data.unread_notifications || 0,
+    data.proactive || {},
+  );
   renderAutoFlow(data.auto_flow);
   renderAutomations(data.automations || []);
   renderScenes(data.scenes || []);
   renderMemories(data.memories || []);
   renderEvents(data.events || []);
-  refreshWeather(data.settings);
+  await refreshWeather(data.settings);
 
-  const dueAlarmMessages = [];
-  for (const alarm of data.due_alarms) {
-    const reminder = `闹钟提醒：${alarm.label}`;
-    addMessage(reminder, "assistant");
-    dueAlarmMessages.push(reminder);
-    showToast(`闹钟：${alarm.label}`);
-  }
-  if (dueAlarmMessages.length) {
-    speakAssistant(dueAlarmMessages.join("；"));
+  await claimNotification();
+}
+
+async function refreshState() {
+  if (refreshStatePromise) return refreshStatePromise;
+  refreshStatePromise = refreshStateOnce();
+  try {
+    return await refreshStatePromise;
+  } finally {
+    refreshStatePromise = null;
   }
 }
 
@@ -862,6 +1036,10 @@ document.querySelector("#voiceButton").addEventListener("click", toggleRecording
 document.querySelector("#voiceReplyButton").addEventListener("click", toggleVoiceReply);
 document.querySelector("#ttsVoiceSelect").addEventListener("change", updateTtsVoice);
 document.querySelector("#previewVoiceButton").addEventListener("click", previewVoice);
+document.querySelector("#desktopNotificationButton").addEventListener(
+  "click",
+  requestDesktopNotifications,
+);
 
 document.querySelectorAll("[data-message]").forEach((button) => {
   button.addEventListener("click", () => sendMessage(button.dataset.message));
@@ -923,6 +1101,45 @@ document.querySelector("#autoFlowRunButton").addEventListener("click", async () 
   }
 });
 
+document.querySelector("#proactiveToggleButton").addEventListener("click", async () => {
+  const button = document.querySelector("#proactiveToggleButton");
+  button.disabled = true;
+  try {
+    const result = await api("/api/proactive", {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: !Boolean(state.proactive?.enabled) }),
+    });
+    state.proactive = result.proactive;
+    showToast(result.proactive.enabled ? "主动提醒已开启" : "主动提醒已暂停");
+    await refreshState();
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+document.querySelector("#proactiveRunButton").addEventListener("click", async () => {
+  const button = document.querySelector("#proactiveRunButton");
+  button.disabled = true;
+  try {
+    const result = await api("/api/proactive/run", { method: "POST" });
+    const count = result.result.created.length;
+    showToast(count ? `新生成 ${count} 条提醒` : "检查完成，没有新的风险提醒");
+    await refreshState();
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+document.querySelector("#notificationReadAllButton").addEventListener("click", async () => {
+  const result = await api("/api/notifications/read-all", { method: "POST" });
+  showToast(`已将 ${result.updated} 条提醒标记为已读`);
+  await refreshState();
+});
+
 document.querySelector("#locationForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
@@ -945,8 +1162,9 @@ document.querySelector("#greeting").textContent =
   currentHour < 11 ? "早上好" : currentHour < 18 ? "下午好" : "晚上好";
 
 updateVoiceReplyButton();
+updateDesktopNotificationButton();
 loadTtsVoices().catch(() => {
   document.querySelector("#ttsProviderLabel").textContent = "音色状态读取失败";
 });
 refreshState().catch((error) => showToast(error.message));
-window.setInterval(() => refreshState().catch(() => {}), 15000);
+window.setInterval(() => refreshState().catch(() => {}), 5000);

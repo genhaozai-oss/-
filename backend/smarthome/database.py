@@ -1,11 +1,13 @@
 import json
+import secrets
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from flask import current_app, g
 
 
 MAX_EVENT_ROWS = 2000
+MAX_NOTIFICATION_ROWS = 200
 
 
 SCHEMA = """
@@ -108,6 +110,26 @@ CREATE TABLE IF NOT EXISTS device_manual_overrides (
     reason TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    payload TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    claimed_at TEXT,
+    claim_token TEXT,
+    delivered_at TEXT,
+    read_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS runtime_leases (
+    name TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
 """
 
 
@@ -179,6 +201,15 @@ def now_iso():
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def _absolute_time(value):
+    timestamp = datetime.fromisoformat(str(value))
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(
+            tzinfo=datetime.now().astimezone().tzinfo
+        )
+    return timestamp.astimezone(timezone.utc)
+
+
 def infer_room_from_name(name):
     normalized = str(name or "").strip()
     for room in sorted(KNOWN_ROOMS, key=len, reverse=True):
@@ -205,6 +236,15 @@ def close_db(_error=None):
 def init_db():
     db = get_db()
     db.executescript(SCHEMA)
+    notification_columns = {
+        row["name"]
+        for row in db.execute("PRAGMA table_info(notifications)").fetchall()
+    }
+    for column_name in ("claimed_at", "claim_token"):
+        if column_name not in notification_columns:
+            db.execute(
+                f"ALTER TABLE notifications ADD COLUMN {column_name} TEXT"
+            )
     timestamp = now_iso()
     db.executemany(
         """
@@ -706,13 +746,7 @@ def set_device_manual_override(device_id, minutes=30, reason="用户手动控制
 
 
 def list_active_manual_overrides():
-    timestamp = now_iso()
-    db = get_db()
-    db.execute(
-        "DELETE FROM device_manual_overrides WHERE until_at <= ?",
-        (timestamp,),
-    )
-    rows = db.execute(
+    rows = get_db().execute(
         """
         SELECT device_manual_overrides.*, devices.name AS device_name
         FROM device_manual_overrides
@@ -720,8 +754,10 @@ def list_active_manual_overrides():
         ORDER BY until_at
         """
     ).fetchall()
-    db.commit()
-    return rows_to_dicts(rows)
+    current = datetime.now(timezone.utc)
+    active = [row for row in rows if _absolute_time(row["until_at"]) > current]
+    active.sort(key=lambda row: _absolute_time(row["until_at"]))
+    return rows_to_dicts(active)
 
 
 def create_alarm(label, scheduled_at):
@@ -750,9 +786,9 @@ def list_alarms():
         """
         SELECT * FROM alarms
         WHERE enabled = 1 AND triggered = 0
-        ORDER BY scheduled_at
         """
     ).fetchall()
+    rows = sorted(rows, key=lambda row: _absolute_time(row["scheduled_at"]))
     return rows_to_dicts(rows)
 
 
@@ -764,16 +800,16 @@ def delete_alarm(alarm_id):
 
 
 def due_alarms():
-    timestamp = now_iso()
+    current = datetime.now(timezone.utc)
     db = get_db()
     rows = db.execute(
         """
         SELECT * FROM alarms
-        WHERE enabled = 1 AND triggered = 0 AND scheduled_at <= ?
-        ORDER BY scheduled_at
-        """,
-        (timestamp,),
+        WHERE enabled = 1 AND triggered = 0
+        """
     ).fetchall()
+    rows = [row for row in rows if _absolute_time(row["scheduled_at"]) <= current]
+    rows.sort(key=lambda row: _absolute_time(row["scheduled_at"]))
     if rows:
         db.executemany(
             "UPDATE alarms SET triggered = 1 WHERE id = ?",
@@ -781,6 +817,266 @@ def due_alarms():
         )
         db.commit()
     return rows_to_dicts(rows)
+
+
+def _decode_notification(row):
+    if not row:
+        return None
+    notification = dict(row)
+    notification["payload"] = json.loads(notification["payload"])
+    return notification
+
+
+def get_notification(notification_id):
+    row = get_db().execute(
+        "SELECT * FROM notifications WHERE id = ?",
+        (notification_id,),
+    ).fetchone()
+    return _decode_notification(row)
+
+
+def _prune_read_notifications(db):
+    db.execute(
+        """
+        DELETE FROM notifications
+        WHERE read_at IS NOT NULL
+          AND id NOT IN (
+              SELECT id FROM notifications
+              WHERE read_at IS NOT NULL
+              ORDER BY id DESC
+              LIMIT ?
+          )
+        """,
+        (MAX_NOTIFICATION_ROWS,),
+    )
+
+
+def create_notification(kind, title, message, dedupe_key, payload=None):
+    db = get_db()
+    cursor = db.execute(
+        """
+        INSERT OR IGNORE INTO notifications
+            (kind, title, message, dedupe_key, payload, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            kind,
+            title,
+            message,
+            dedupe_key,
+            json.dumps(payload or {}, ensure_ascii=False),
+            now_iso(),
+        ),
+    )
+    created = cursor.rowcount > 0
+    _prune_read_notifications(db)
+    db.commit()
+    row = db.execute(
+        "SELECT * FROM notifications WHERE dedupe_key = ?",
+        (dedupe_key,),
+    ).fetchone()
+    return _decode_notification(row), created
+
+
+def enqueue_due_alarm_notifications():
+    timestamp = now_iso()
+    current = datetime.now(timezone.utc)
+    db = get_db()
+    created_ids = []
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        alarms = db.execute(
+            """
+            SELECT * FROM alarms
+            WHERE enabled = 1 AND triggered = 0
+            """
+        ).fetchall()
+        alarms = [
+            alarm
+            for alarm in alarms
+            if _absolute_time(alarm["scheduled_at"]) <= current
+        ]
+        alarms.sort(key=lambda alarm: _absolute_time(alarm["scheduled_at"]))
+        alarms = alarms[:100]
+        for alarm in alarms:
+            cursor = db.execute(
+                """
+                INSERT OR IGNORE INTO notifications
+                    (kind, title, message, dedupe_key, payload, created_at)
+                VALUES ('alarm', '闹钟提醒', ?, ?, ?, ?)
+                """,
+                (
+                    f"闹钟提醒：{alarm['label']}",
+                    f"alarm:{alarm['id']}",
+                    json.dumps(dict(alarm), ensure_ascii=False),
+                    timestamp,
+                ),
+            )
+            if cursor.rowcount > 0:
+                created_ids.append(cursor.lastrowid)
+            db.execute(
+                "UPDATE alarms SET triggered = 1 WHERE id = ?",
+                (alarm["id"],),
+            )
+        _prune_read_notifications(db)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return [get_notification(item) for item in created_ids]
+
+
+def list_notifications(limit=20, unread_only=False):
+    where = "WHERE read_at IS NULL" if unread_only else ""
+    rows = get_db().execute(
+        f"""
+        SELECT * FROM notifications
+        {where}
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [_decode_notification(row) for row in rows]
+
+
+def unread_notification_count():
+    row = get_db().execute(
+        "SELECT COUNT(*) AS count FROM notifications WHERE read_at IS NULL"
+    ).fetchone()
+    return row["count"]
+
+
+def claim_notification(lease_seconds=30):
+    claimed_at = now_iso()
+    claim_token = secrets.token_urlsafe(24)
+    lease_cutoff = datetime.now(timezone.utc) - timedelta(
+        seconds=lease_seconds
+    )
+    db = get_db()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        rows = db.execute(
+            """
+            SELECT * FROM notifications
+            WHERE delivered_at IS NULL
+              AND read_at IS NULL
+            ORDER BY id
+            """
+        ).fetchall()
+        row = next(
+            (
+                item
+                for item in rows
+                if item["claimed_at"] is None
+                or _absolute_time(item["claimed_at"]) <= lease_cutoff
+            ),
+            None,
+        )
+        if not row:
+            db.commit()
+            return None
+        db.execute(
+            """
+            UPDATE notifications
+            SET claimed_at = ?, claim_token = ?
+            WHERE id = ? AND delivered_at IS NULL AND read_at IS NULL
+            """,
+            (claimed_at, claim_token, row["id"]),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return get_notification(row["id"])
+
+
+def acknowledge_notification(notification_id, claim_token):
+    db = get_db()
+    cursor = db.execute(
+        """
+        UPDATE notifications
+        SET delivered_at = COALESCE(delivered_at, ?)
+        WHERE id = ? AND claim_token = ?
+        """,
+        (now_iso(), notification_id, claim_token),
+    )
+    db.commit()
+    return get_notification(notification_id) if cursor.rowcount else None
+
+
+def acquire_runtime_lease(name, owner_id, ttl_seconds):
+    timestamp = datetime.now(timezone.utc)
+    expires_at = (timestamp + timedelta(seconds=ttl_seconds)).isoformat(
+        timespec="seconds"
+    )
+    db = get_db()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        current = db.execute(
+            "SELECT * FROM runtime_leases WHERE name = ?",
+            (name,),
+        ).fetchone()
+        if (
+            current
+            and current["owner_id"] != owner_id
+            and _absolute_time(current["expires_at"]) > timestamp
+        ):
+            db.commit()
+            return False
+        db.execute(
+            """
+            INSERT INTO runtime_leases (name, owner_id, expires_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                owner_id = excluded.owner_id,
+                expires_at = excluded.expires_at
+            """,
+            (name, owner_id, expires_at),
+        )
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        raise
+
+
+def release_runtime_lease(name, owner_id):
+    db = get_db()
+    cursor = db.execute(
+        "DELETE FROM runtime_leases WHERE name = ? AND owner_id = ?",
+        (name, owner_id),
+    )
+    db.commit()
+    return cursor.rowcount > 0
+
+
+def mark_notification_read(notification_id):
+    db = get_db()
+    cursor = db.execute(
+        """
+        UPDATE notifications
+        SET read_at = COALESCE(read_at, ?)
+        WHERE id = ?
+        """,
+        (now_iso(), notification_id),
+    )
+    db.commit()
+    return get_notification(notification_id) if cursor.rowcount else None
+
+
+def mark_all_notifications_read():
+    db = get_db()
+    cursor = db.execute(
+        """
+        UPDATE notifications
+        SET read_at = ?
+        WHERE read_at IS NULL
+        """,
+        (now_iso(),),
+    )
+    db.commit()
+    return cursor.rowcount
 
 
 def log_event(kind, message, payload=None):

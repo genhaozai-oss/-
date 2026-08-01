@@ -790,6 +790,96 @@ h1 span {
   background: white;
 }
 
+.notification-card {
+  margin-top: 24px;
+}
+
+.notification-card .soft-badge.paused {
+  color: #8b6d60;
+  background: rgba(225, 177, 154, 0.22);
+}
+
+.notification-badges,
+.notification-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.notification-summary {
+  margin: 14px 0 16px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.notification-actions button {
+  padding: 9px 13px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  color: var(--sage-dark);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.notification-actions button:disabled {
+  opacity: 0.5;
+}
+
+.notification-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.notification-item {
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  align-items: start;
+  gap: 11px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.48);
+}
+
+.notification-item.read {
+  opacity: 0.58;
+}
+
+.notification-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: 13px;
+  color: white;
+  background: var(--sage-dark);
+  font-size: 13px;
+}
+
+.notification-item strong,
+.notification-item small {
+  display: block;
+}
+
+.notification-item p {
+  margin: 4px 0;
+  line-height: 1.5;
+}
+
+.notification-item small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.notification-item button {
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--sage-dark);
+  background: white;
+}
+
 .auto-flow-card {
   margin-top: 24px;
   overflow: hidden;
@@ -1079,6 +1169,10 @@ h1 span {
   }
 
   .auto-flow-steps {
+    grid-template-columns: 1fr;
+  }
+
+  .notification-list {
     grid-template-columns: 1fr;
   }
 

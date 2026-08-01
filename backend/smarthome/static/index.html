@@ -126,6 +126,7 @@
           <button type="button" id="voiceReplyButton" aria-pressed="false">语音播报：关</button>
           <button data-message="撤销刚才的操作">撤销上一步</button>
           <button data-message="立即巡检">运行 AI 自动流</button>
+          <button data-message="查看提醒">查看主动提醒</button>
           <button data-message="室内温湿度怎么样">查询环境</button>
           <button data-message="以后湿度超过70%就自动打开抽湿器演示">添加自动化</button>
           <button data-message="记住睡眠模式：关掉灯，把风扇调到30%">记住场景</button>
@@ -169,6 +170,32 @@
         </div>
       </div>
       <div id="alarmList" class="alarm-list"></div>
+    </section>
+
+    <section class="card notification-card">
+      <div class="card-heading">
+        <div>
+          <p class="card-kicker">后台持续看守</p>
+          <h3>主动提醒中心</h3>
+        </div>
+        <div class="notification-badges">
+          <span id="proactiveBadge" class="soft-badge">读取中</span>
+          <span id="notificationUnreadBadge" class="soft-badge">0 条未读</span>
+        </div>
+      </div>
+      <p id="proactiveSummary" class="notification-summary">
+        正在读取后台提醒状态…
+      </p>
+      <div class="notification-actions">
+        <button id="proactiveToggleButton" type="button">暂停主动提醒</button>
+        <button id="proactiveRunButton" type="button">立即检查</button>
+        <button id="desktopNotificationButton" type="button">开启桌面提醒</button>
+        <button id="notificationReadAllButton" type="button">全部已读</button>
+      </div>
+      <div id="notificationList" class="notification-list"></div>
+      <p class="auto-flow-note">
+        服务开启时，即使网页关闭也会检查并保存提醒，重新打开页面后播报；电脑关机后本机服务无法运行。
+      </p>
     </section>
 
     <section class="card auto-flow-card">
