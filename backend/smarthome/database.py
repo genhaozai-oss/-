@@ -233,6 +233,81 @@ def close_db(_error=None):
         db.close()
 
 
+def _migrate_preference_sources(db):
+    migrated = db.execute(
+        """
+        SELECT value FROM settings
+        WHERE key = 'preference_source_migration_v1'
+        """
+    ).fetchone()
+    if migrated:
+        return
+
+    preferences = db.execute(
+        """
+        SELECT key, value FROM settings
+        WHERE key LIKE 'preference.%'
+        """
+    ).fetchall()
+    events = db.execute(
+        """
+        SELECT kind, payload FROM events
+        WHERE kind IN ('learning', 'memory')
+        ORDER BY id DESC
+        """
+    ).fetchall()
+    latest_evidence = {}
+    for event in events:
+        try:
+            payload = json.loads(event["payload"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        memory = payload.get("memory")
+        if isinstance(memory, dict):
+            name = str(memory.get("name", "")).strip()
+        else:
+            name = str(payload.get("preference", "")).strip()
+        if name and name not in latest_evidence:
+            latest_evidence[name] = (event["kind"], memory)
+
+    for row in preferences:
+        name = row["key"].removeprefix("preference.")
+        existing = db.execute(
+            "SELECT value FROM settings WHERE key = ?",
+            (f"preference_meta.{name}",),
+        ).fetchone()
+        if existing:
+            continue
+        source = "explicit"
+        evidence = latest_evidence.get(name)
+        if evidence:
+            kind, memory = evidence
+            if isinstance(memory, dict):
+                try:
+                    values_match = float(memory.get("value")) == float(
+                        row["value"]
+                    )
+                except (TypeError, ValueError):
+                    values_match = (
+                        str(memory.get("value", "")) == row["value"]
+                    )
+                if kind == "learning" and values_match:
+                    source = "automatic"
+        db.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?)",
+            (f"preference_meta.{name}", source),
+        )
+
+    db.execute(
+        """
+        INSERT INTO settings (key, value)
+        VALUES ('preference_source_migration_v1', 'done')
+        """
+    )
+
+
 def init_db():
     db = get_db()
     db.executescript(SCHEMA)
@@ -301,6 +376,7 @@ def init_db():
             VALUES ('device_room_name_sync_v1', 'done')
             """
         )
+    _migrate_preference_sources(db)
     db.commit()
 
 
@@ -442,9 +518,62 @@ def get_user_preferences():
     }
 
 
-def set_user_preference(name, value):
-    set_settings({f"preference.{name}": value})
+def get_user_preference_source(name):
+    source = get_settings().get(f"preference_meta.{name}")
+    return source if source in {"explicit", "automatic"} else "explicit"
+
+
+def set_user_preference(name, value, source="explicit"):
+    if source not in {"explicit", "automatic"}:
+        raise ValueError("偏好来源无效。")
+    set_settings(
+        {
+            f"preference.{name}": value,
+            f"preference_meta.{name}": source,
+        }
+    )
     return get_user_preferences()
+
+
+def set_automatic_user_preference(name, value, expected_value):
+    db = get_db()
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        current_row = db.execute(
+            "SELECT value FROM settings WHERE key = ?",
+            (f"preference.{name}",),
+        ).fetchone()
+        source_row = db.execute(
+            "SELECT value FROM settings WHERE key = ?",
+            (f"preference_meta.{name}",),
+        ).fetchone()
+        current_value = current_row["value"] if current_row else None
+        current_source = (
+            source_row["value"]
+            if source_row and source_row["value"] in {"explicit", "automatic"}
+            else "explicit"
+        )
+        if (
+            current_value != expected_value
+            or (current_value is not None and current_source != "automatic")
+        ):
+            db.rollback()
+            return False
+        db.executemany(
+            """
+            INSERT INTO settings (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            [
+                (f"preference.{name}", str(value)),
+                (f"preference_meta.{name}", "automatic"),
+            ],
+        )
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        raise
 
 
 def delete_user_preference(name):
@@ -452,6 +581,10 @@ def delete_user_preference(name):
     cursor = db.execute(
         "DELETE FROM settings WHERE key = ?",
         (f"preference.{name}",),
+    )
+    db.execute(
+        "DELETE FROM settings WHERE key = ?",
+        (f"preference_meta.{name}",),
     )
     db.commit()
     return cursor.rowcount > 0

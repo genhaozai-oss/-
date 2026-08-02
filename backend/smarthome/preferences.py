@@ -27,21 +27,32 @@ PREFERENCE_DEFINITIONS = {
         "unit": "%",
     },
 }
+PREFERENCE_SOURCE_LABELS = {
+    "explicit": "用户设定",
+    "automatic": "自动学习",
+}
 
 
 def list_preferences():
     stored = database.get_user_preferences()
-    return [
-        {
-            "name": name,
-            "label": definition["label"],
-            "value": float(stored[name]),
-            "unit": definition["unit"],
-            "display_value": f"{float(stored[name]):g}{definition['unit']}",
-        }
-        for name, definition in PREFERENCE_DEFINITIONS.items()
-        if name in stored
-    ]
+    memories = []
+    for name, definition in PREFERENCE_DEFINITIONS.items():
+        if name not in stored:
+            continue
+        source = database.get_user_preference_source(name)
+        value = float(stored[name])
+        memories.append(
+            {
+                "name": name,
+                "label": definition["label"],
+                "value": value,
+                "unit": definition["unit"],
+                "display_value": f"{value:g}{definition['unit']}",
+                "source": source,
+                "source_label": PREFERENCE_SOURCE_LABELS[source],
+            }
+        )
+    return memories
 
 
 def remember_preference(name, value):
@@ -57,7 +68,11 @@ def remember_preference(name, value):
             f"偏好值应在 {definition['minimum']}～"
             f"{definition['maximum']}{definition['unit']} 之间。"
         )
-    database.set_user_preference(name, f"{numeric_value:g}")
+    database.set_user_preference(
+        name,
+        f"{numeric_value:g}",
+        source="explicit",
+    )
     from .learning import reset_learning
 
     reset_learning(name)
@@ -67,6 +82,8 @@ def remember_preference(name, value):
         "value": numeric_value,
         "unit": definition["unit"],
         "display_value": f"{numeric_value:g}{definition['unit']}",
+        "source": "explicit",
+        "source_label": PREFERENCE_SOURCE_LABELS["explicit"],
     }
 
 
@@ -74,9 +91,9 @@ def forget_preference(name):
     definition = PREFERENCE_DEFINITIONS.get(name)
     if not definition:
         raise ValueError("这种偏好暂时不支持。")
-    if not database.delete_user_preference(name):
-        raise ValueError(f"还没有记住你的{definition['label']}。")
     from .learning import reset_learning
 
     reset_learning(name)
+    if not database.delete_user_preference(name):
+        raise ValueError(f"还没有记住你的{definition['label']}。")
     return definition["label"]

@@ -38,8 +38,16 @@ def observe_capability(device_id, capability, value):
         return None
 
     preference = definition["preference"]
-    if preference in database.get_user_preferences():
+    preferences = database.get_user_preferences()
+    stored_value = preferences.get(preference)
+    if (
+        stored_value is not None
+        and database.get_user_preference_source(preference) != "automatic"
+    ):
         return None
+    previous_value = (
+        float(stored_value) if stored_value is not None else None
+    )
 
     settings = database.get_settings()
     try:
@@ -52,10 +60,15 @@ def observe_capability(device_id, capability, value):
     samples.append(float(value))
 
     learned_value = None
+    confirmed = False
     if len(samples) >= REQUIRED_OBSERVATIONS:
         recent = samples[-REQUIRED_OBSERVATIONS:]
         if max(recent) - min(recent) <= definition["tolerance"]:
             learned_value = float(median(recent))
+            confirmed = (
+                previous_value is not None
+                and abs(learned_value - previous_value) < 0.001
+            )
         else:
             samples = [float(value)]
 
@@ -67,13 +80,35 @@ def observe_capability(device_id, capability, value):
         "label": definition["label"],
         "progress": len(samples),
         "required": REQUIRED_OBSERVATIONS,
-        "learned": learned_value is not None,
+        "learned": learned_value is not None and not confirmed,
+        "confirmed": confirmed,
     }
     if learned_value is None:
         return result
 
-    database.set_user_preference(preference, f"{learned_value:g}")
+    if confirmed:
+        reset_learning(preference)
+        result["message"] = (
+            f"你的{definition['label']}仍是"
+            f"{previous_value:g}{definition['unit']}，无需更新。"
+        )
+        return result
+
+    saved = database.set_automatic_user_preference(
+        preference,
+        f"{learned_value:g}",
+        expected_value=stored_value,
+    )
     reset_learning(preference)
+    if not saved:
+        result.update(
+            {
+                "learned": False,
+                "cancelled": True,
+                "message": "你刚刚明确更新了这项偏好，本次自动学习已取消。",
+            }
+        )
+        return result
     memory = {
         "name": preference,
         "label": definition["label"],
@@ -81,12 +116,27 @@ def observe_capability(device_id, capability, value):
         "unit": definition["unit"],
         "display_value": f"{learned_value:g}{definition['unit']}",
         "source": "automatic",
+        "source_label": "自动学习",
     }
-    message = (
-        f"我发现你经常把{device['name']}{definition['label'].removeprefix('常用')}"
-        f"调到{memory['display_value']}，已自动记住。"
+    if previous_value is None:
+        message = (
+            f"我发现你经常把{device['name']}"
+            f"{definition['label'].removeprefix('常用')}"
+            f"调到{memory['display_value']}，已自动记住。"
+        )
+    else:
+        message = (
+            f"我发现你的{definition['label']}有变化，已从"
+            f"{previous_value:g}{definition['unit']}更新为"
+            f"{memory['display_value']}。"
+        )
+    result.update(
+        {
+            "memory": memory,
+            "message": message,
+            "updated": previous_value is not None,
+        }
     )
-    result.update({"memory": memory, "message": message})
     database.log_event(
         "learning",
         message,

@@ -366,7 +366,7 @@ function renderDevices(devices) {
           );
           state.selectedDeviceId = null;
           state.contextDeviceId = result.context_device_id || device.id;
-          if (result.learning?.learned) {
+          if (result.learning?.message) {
             showToast(result.learning.message);
           } else if (result.learning) {
             showToast(
@@ -720,7 +720,10 @@ function renderMemories(memories) {
     icon.textContent = "忆";
     const text = document.createElement("span");
     const label = document.createElement("small");
-    label.textContent = memory.label;
+    const sourceLabel =
+      memory.source_label ||
+      (memory.source === "automatic" ? "自动学习" : "用户设定");
+    label.textContent = `${memory.label} · ${sourceLabel}`;
     const value = document.createElement("strong");
     value.textContent = memory.display_value;
     text.append(label, value);

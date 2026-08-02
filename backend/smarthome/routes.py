@@ -235,11 +235,19 @@ def _process_message(message, selected_device_id=None, session_id="default"):
     }:
         hold_manual_control(result)
     learnings = learn_from_result(result)
-    learned = [item for item in learnings if item["learned"]]
+    learned = [item for item in learnings if item.get("learned")]
+    learning_feedback = [
+        item
+        for item in learnings
+        if item.get("message")
+    ]
     if learnings:
         result["learning"] = learnings
+    if learning_feedback:
+        result["reply"] += " " + " ".join(
+            item["message"] for item in learning_feedback
+        )
     if learned:
-        result["reply"] += " " + " ".join(item["message"] for item in learned)
         result["memories"] = list_preferences()
     remembered_device_id = remember_result_device(session_id, result)
     if remembered_device_id:
