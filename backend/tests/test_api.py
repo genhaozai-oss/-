@@ -24,6 +24,36 @@ def test_index_includes_optional_chinese_voice_reply(client):
     assert "豆包暂时不可用，已改用百炼播报" in script
 
 
+def test_index_includes_automatic_voice_endpoint_detection(client):
+    html = client.get("/").get_data(as_text=True)
+    script = client.get("/app.js").get_data(as_text=True)
+
+    assert 'id="voiceStatus"' in html
+    assert 'aria-live="polite"' in html
+    assert "startVoiceActivityMonitor" in script
+    assert "getByteTimeDomainData" in script
+    assert "VAD_END_SILENCE_MS = 1000" in script
+    assert "VAD_NO_SPEECH_HINT_MS = 4000" in script
+    assert "VAD_NO_SPEECH_STOP_MS = 5000" in script
+    assert "VAD_NOISE_CALIBRATION_MS = 300" in script
+    assert "VAD_INITIAL_NOISE_FLOOR = 0.01" in script
+    assert "activeSpeechRequestId !== null" in script
+    assert "displayedNotificationIds" in script
+    assert 'notification.kind === "alarm" && !played' in script
+    assert 'abort("pagehide")' in script
+    assert "SUPPORTED_RECORDING_MIME_TYPES" in script
+    assert "当前浏览器录音格式暂不支持" in script
+    assert "session.vadCoveredFromStart" in script
+    assert "isObviouslySilentSession" in script
+    assert "已识别：${text}；正在处理指令" in script
+    assert "speechRequestId += 1" in script
+    assert "voiceCaptureActive()" in script
+    assert 'window.addEventListener("pagehide", releaseVoiceResources)' in script
+    assert 'document.addEventListener("visibilitychange"' in script
+    assert "captureGeneration !== voiceCaptureGeneration" in script
+    assert "cleanupVoiceActivityMonitor" in script
+
+
 def test_index_includes_persistent_automation_manager(client):
     html = client.get("/").get_data(as_text=True)
     script = client.get("/app.js").get_data(as_text=True)

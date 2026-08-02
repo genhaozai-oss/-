@@ -28,8 +28,11 @@ const icons = {
 let activeSpeechUtterance = null;
 let activeSpeechAudio = null;
 let speechRequestId = 0;
+let activeSpeechRequestId = null;
 let systemSpeechWatchdog = null;
+let voiceInputMode = "idle";
 let notificationClaimInFlight = false;
+const displayedNotificationIds = new Set();
 let refreshStatePromise = null;
 let weatherRequestPromise = null;
 
@@ -81,6 +84,13 @@ function stopSpeaking() {
   }
 }
 
+function voiceCaptureActive() {
+  return (
+    ["preparing", "listening", "speech"].includes(voiceInputMode) ||
+    Boolean(activeVoiceStream)
+  );
+}
+
 function cleanSpokenText(text) {
   return String(text)
     .replace(/https?:\/\/\S+/g, "链接")
@@ -130,6 +140,7 @@ function speakWithSystemVoice(spokenText) {
 }
 
 async function speakAssistant(text, { force = false } = {}) {
+  if (voiceCaptureActive()) return false;
   if (!state.voiceReplyEnabled && !force) return false;
   const spokenText = cleanSpokenText(text);
   if (!spokenText) return false;
@@ -138,6 +149,8 @@ async function speakAssistant(text, { force = false } = {}) {
   stopSpeaking();
   if (state.ttsVoice === "system") return speakWithSystemVoice(spokenText);
 
+  activeSpeechRequestId = requestId;
+  let requestedAudio = null;
   try {
     const response = await fetch("/api/voice/synthesize", {
       method: "POST",
@@ -152,9 +165,10 @@ async function speakAssistant(text, { force = false } = {}) {
     if (
       requestId !== speechRequestId ||
       (!state.voiceReplyEnabled && !force)
-    ) return;
+    ) return false;
 
     const audio = new Audio(result.audio_url);
+    requestedAudio = audio;
     activeSpeechAudio = audio;
     audio.addEventListener("ended", () => {
       if (activeSpeechAudio === audio) activeSpeechAudio = null;
@@ -166,6 +180,11 @@ async function speakAssistant(text, { force = false } = {}) {
     await audio.play();
     return true;
   } catch (error) {
+    if (requestedAudio && activeSpeechAudio === requestedAudio) {
+      requestedAudio.pause();
+      requestedAudio.removeAttribute("src");
+      activeSpeechAudio = null;
+    }
     if (requestId === speechRequestId && speechSynthesisSupported()) {
       showToast("云端音色不可用，已改用系统声音");
       return speakWithSystemVoice(spokenText);
@@ -174,6 +193,8 @@ async function speakAssistant(text, { force = false } = {}) {
       showToast(error.message || "云端语音播报失败");
     }
     return false;
+  } finally {
+    if (activeSpeechRequestId === requestId) activeSpeechRequestId = null;
   }
 }
 
@@ -507,6 +528,8 @@ async function claimNotification() {
   if (
     document.visibilityState !== "visible" ||
     notificationClaimInFlight ||
+    voiceCaptureActive() ||
+    activeSpeechRequestId !== null ||
     activeSpeechAudio ||
     activeSpeechUtterance
   ) {
@@ -517,11 +540,23 @@ async function claimNotification() {
     const result = await api("/api/notifications/claim", { method: "POST" });
     const notification = result.notification;
     if (!notification) return;
-    addMessage(notification.message, "assistant");
-    showToast(notification.title);
-    await speakAssistant(notification.message, {
+    if (
+      voiceCaptureActive() ||
+      activeSpeechRequestId !== null ||
+      activeSpeechAudio ||
+      activeSpeechUtterance
+    ) {
+      return;
+    }
+    if (!displayedNotificationIds.has(notification.id)) {
+      displayedNotificationIds.add(notification.id);
+      addMessage(notification.message, "assistant");
+      showToast(notification.title);
+    }
+    const played = await speakAssistant(notification.message, {
       force: notification.kind === "alarm",
     });
+    if (notification.kind === "alarm" && !played) return;
     if (
       "Notification" in window &&
       window.Notification.permission === "granted"
@@ -867,13 +902,79 @@ async function sendMessage(message) {
   }
 }
 
-let mediaRecorder = null;
-let recordedChunks = [];
-let recordingTimer = null;
-let voicePreparing = false;
-let voiceProcessing = false;
+let activeVoiceSession = null;
+let activeVoiceStream = null;
+let activeVoiceRequestController = null;
+let voiceCaptureGeneration = 0;
+let voicePageHidden = document.visibilityState === "hidden";
 const MAX_RECORDING_MS = 10000;
 const VOICE_REQUEST_TIMEOUT_MS = 25000;
+const VAD_MIN_START_RMS = 0.018;
+const VAD_MAX_START_RMS = 0.06;
+const VAD_START_RATIO = 2.2;
+const VAD_REQUIRED_LOUD_MS = 120;
+const VAD_END_SILENCE_MS = 1000;
+const VAD_NO_SPEECH_HINT_MS = 4000;
+const VAD_NO_SPEECH_STOP_MS = 5000;
+const VAD_NOISE_CALIBRATION_MS = 300;
+const VAD_INITIAL_NOISE_FLOOR = 0.01;
+const SUPPORTED_RECORDING_MIME_TYPES = new Set([
+  "audio/ogg",
+  "audio/webm",
+  "video/webm",
+]);
+
+function setVoiceStatus(message, mode = "idle") {
+  voiceInputMode = mode;
+  const status = document.querySelector("#voiceStatus");
+  if (!status) return;
+  status.textContent = message;
+  status.dataset.state = mode;
+}
+
+function resetVoiceButton() {
+  const button = document.querySelector("#voiceButton");
+  button.disabled = false;
+  button.classList.remove("recording", "processing");
+  button.setAttribute("aria-label", "语音输入");
+}
+
+function stopVoiceStream(stream) {
+  if (!stream) return;
+  stream.getTracks().forEach((track) => {
+    if (track.readyState !== "ended") track.stop();
+  });
+  if (activeVoiceStream === stream) activeVoiceStream = null;
+}
+
+function cleanupVoiceActivityMonitor(session) {
+  if (session.vadFrame !== null) {
+    window.cancelAnimationFrame(session.vadFrame);
+    session.vadFrame = null;
+  }
+  try {
+    session.vadSource?.disconnect();
+    session.vadAnalyser?.disconnect();
+  } catch (_error) {
+    // 节点可能已经随 AudioContext 一起关闭。
+  }
+  session.vadSource = null;
+  session.vadAnalyser = null;
+  if (
+    session.audioContext?.state !== "closed" &&
+    typeof session.audioContext?.close === "function"
+  ) {
+    const closing = session.audioContext.close();
+    closing?.catch?.(() => {});
+  }
+  session.audioContext = null;
+}
+
+function cleanupVoiceSession(session) {
+  window.clearTimeout(session.recordingTimer);
+  session.recordingTimer = null;
+  cleanupVoiceActivityMonitor(session);
+}
 
 function preferredRecordingMimeType() {
   const candidates = [
@@ -881,6 +982,7 @@ function preferredRecordingMimeType() {
     "audio/webm",
     "audio/ogg;codecs=opus",
   ];
+  if (typeof MediaRecorder.isTypeSupported !== "function") return "";
   return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || "";
 }
 
@@ -890,34 +992,294 @@ function recordingFileName(mimeType) {
     "audio/ogg": "ogg",
     "audio/wav": "wav",
     "audio/webm": "webm",
+    "video/webm": "webm",
   };
   return `recording.${extensions[baseType] || "webm"}`;
 }
 
-function stopRecording() {
-  window.clearTimeout(recordingTimer);
-  recordingTimer = null;
-  if (mediaRecorder?.state === "recording") {
-    mediaRecorder.stop();
+function finishDiscardedVoiceSession(session) {
+  if (activeVoiceSession === session) activeVoiceSession = null;
+  resetVoiceButton();
+  setVoiceStatus(
+    session.discardMessage || "没有听到清晰人声，本次没有提交识别。",
+    "idle",
+  );
+}
+
+async function handleRecorderStopped(session) {
+  if (session.stopHandled) return;
+  session.stopHandled = true;
+  cleanupVoiceSession(session);
+  stopVoiceStream(session.stream);
+
+  if (session.discard) {
+    finishDiscardedVoiceSession(session);
+    return;
   }
+
+  const actualMimeType =
+    session.recorder.mimeType || session.requestedMimeType || "audio/webm";
+  const audio = new Blob(session.chunks, { type: actualMimeType });
+  session.chunks.length = 0;
+  if (!audio.size) {
+    session.discardMessage = "没有录到声音，请重新说一次。";
+    finishDiscardedVoiceSession(session);
+    return;
+  }
+
+  const button = document.querySelector("#voiceButton");
+  button.disabled = true;
+  button.classList.add("processing");
+  button.setAttribute("aria-label", "语音识别处理中");
+  setVoiceStatus("正在识别中文…", "processing");
+
+  const form = new FormData();
+  form.append("audio", audio, recordingFileName(actualMimeType));
+  form.append("execute", "0");
+  const controller = new AbortController();
+  activeVoiceRequestController = controller;
+  const timeout = window.setTimeout(
+    () => controller.abort("timeout"),
+    VOICE_REQUEST_TIMEOUT_MS,
+  );
+  try {
+    const response = await fetch("/api/voice/transcribe", {
+      method: "POST",
+      body: form,
+      signal: controller.signal,
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "语音识别失败");
+    const transcription = result.transcription;
+    const text = String(transcription.text || "").trim();
+    if (!text) throw new Error("没有识别到内容，请重新说一次");
+    const seconds = (transcription.latency_ms / 1000).toFixed(1);
+    const fallback = transcription.fallback_from
+      ? "（云端不可用，已自动转为本地）"
+      : "";
+    showToast(
+      `${transcription.provider_label}${fallback}识别完成，用时 ${seconds} 秒`,
+    );
+    setVoiceStatus(`已识别：${text}；正在处理指令…`, "processing");
+    await sendMessage(text);
+    setVoiceStatus(`识别完成：${text}`, "done");
+  } catch (error) {
+    if (controller.signal.reason === "pagehide") return;
+    const message =
+      error.name === "AbortError"
+        ? "语音识别超过25秒，请重试"
+        : error.message;
+    setVoiceStatus(`识别失败：${message}`, "error");
+    addMessage(`语音识别失败：${message}`, "assistant");
+  } finally {
+    window.clearTimeout(timeout);
+    if (activeVoiceRequestController === controller) {
+      activeVoiceRequestController = null;
+    }
+    if (activeVoiceSession === session) activeVoiceSession = null;
+    resetVoiceButton();
+  }
+}
+
+function abortVoiceSession(session, message) {
+  if (!session || session.stopHandled) return;
+  session.stopHandled = true;
+  session.stopRequested = true;
+  session.discard = true;
+  cleanupVoiceSession(session);
+  try {
+    if (session.recorder.state === "recording") session.recorder.stop();
+  } catch (_error) {
+    // 录音器已经失效时仍需继续释放麦克风。
+  }
+  stopVoiceStream(session.stream);
+  if (activeVoiceSession === session) activeVoiceSession = null;
+  resetVoiceButton();
+  setVoiceStatus(message, "error");
+}
+
+function requestRecordingStop(reason, { discard = false } = {}) {
+  const session = activeVoiceSession;
+  if (!session || session.stopRequested) return false;
+  session.stopRequested = true;
+  session.stopReason = reason;
+  session.discard = discard;
+  if (discard) {
+    session.discardMessage = "没有听到清晰人声，本次没有提交识别。";
+  }
+  cleanupVoiceSession(session);
   const button = document.querySelector("#voiceButton");
   button.classList.remove("recording");
   button.disabled = true;
+  button.setAttribute("aria-label", "正在结束语音输入");
+  setVoiceStatus(
+    discard ? "没有听到清晰人声，正在结束…" : "正在识别中文…",
+    "processing",
+  );
+  try {
+    if (session.recorder.state === "recording") {
+      session.recorder.stop();
+    } else {
+      void handleRecorderStopped(session);
+    }
+  } catch (_error) {
+    abortVoiceSession(session, "录音结束失败，请重新尝试。");
+  }
+  return true;
+}
+
+function isObviouslySilentSession(session) {
+  return (
+    session.vadAvailable &&
+    session.vadCoveredFromStart &&
+    !session.speechDetected &&
+    session.peakRms < VAD_MIN_START_RMS * 0.55
+  );
+}
+
+async function startVoiceActivityMonitor(session) {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return false;
+  try {
+    const audioContext = new AudioContextClass();
+    session.audioContext = audioContext;
+    const source = audioContext.createMediaStreamSource(session.stream);
+    session.vadSource = source;
+    const analyser = audioContext.createAnalyser();
+    session.vadAnalyser = analyser;
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0.2;
+    source.connect(analyser);
+    if (audioContext.state !== "running") {
+      const resumeResult = audioContext.resume?.();
+      if (resumeResult) {
+        let resumeTimer = null;
+        await Promise.race([
+          resumeResult,
+          new Promise((resolve) => {
+            resumeTimer = window.setTimeout(resolve, 300);
+          }),
+        ]).finally(() => window.clearTimeout(resumeTimer));
+      }
+    }
+    if (
+      audioContext.state !== "running" ||
+      activeVoiceSession !== session ||
+      session.stopRequested
+    ) {
+      cleanupVoiceActivityMonitor(session);
+      session.vadAvailable = false;
+      return false;
+    }
+
+    session.vadAvailable = true;
+    session.vadCoveredFromStart =
+      window.performance.now() - session.recordingStartedAt <= 100;
+    session.vadStartedAt = window.performance.now();
+    session.noiseFloor = VAD_INITIAL_NOISE_FLOOR;
+    session.peakRms = 0;
+    session.loudSince = null;
+    session.lastVoiceAt = null;
+    const samples = new Uint8Array(analyser.fftSize);
+
+    const monitor = () => {
+      if (
+        activeVoiceSession !== session ||
+        session.stopRequested ||
+        session.recorder.state !== "recording"
+      ) {
+        return;
+      }
+      analyser.getByteTimeDomainData(samples);
+      let energy = 0;
+      for (const sample of samples) {
+        const amplitude = (sample - 128) / 128;
+        energy += amplitude * amplitude;
+      }
+      const rms = Math.sqrt(energy / samples.length);
+      const now = window.performance.now();
+      const elapsed = now - session.vadStartedAt;
+      session.peakRms = Math.max(session.peakRms, rms);
+
+      if (!session.speechDetected) {
+        if (elapsed < VAD_NOISE_CALIBRATION_MS) {
+          session.noiseFloor = Math.min(session.noiseFloor, rms);
+        }
+        const startThreshold = Math.min(
+          VAD_MAX_START_RMS,
+          Math.max(
+            VAD_MIN_START_RMS,
+            session.noiseFloor * VAD_START_RATIO,
+          ),
+        );
+        if (rms >= startThreshold) {
+          session.loudSince ??= now;
+          if (now - session.loudSince >= VAD_REQUIRED_LOUD_MS) {
+            session.speechDetected = true;
+            session.startThreshold = startThreshold;
+            session.lastVoiceAt = now;
+            setVoiceStatus("已听到声音，说完后会自动识别。", "speech");
+          }
+        } else {
+          session.loudSince = null;
+          if (elapsed >= VAD_NOISE_CALIBRATION_MS) {
+            session.noiseFloor = session.noiseFloor * 0.98 + rms * 0.02;
+          }
+        }
+        if (
+          !session.speechDetected &&
+          !session.noSpeechHinted &&
+          elapsed >= VAD_NO_SPEECH_HINT_MS
+        ) {
+          session.noSpeechHinted = true;
+          setVoiceStatus(
+            "还没检测到清晰声音，可继续说或点击麦克风结束。",
+            "listening",
+          );
+        }
+        if (!session.speechDetected && elapsed >= VAD_NO_SPEECH_STOP_MS) {
+          requestRecordingStop("no_speech", {
+            discard: isObviouslySilentSession(session),
+          });
+          return;
+        }
+      } else {
+        const continueThreshold = Math.max(
+          0.012,
+          session.noiseFloor * 1.5,
+          session.startThreshold * 0.55,
+        );
+        if (rms >= continueThreshold) {
+          session.lastVoiceAt = now;
+        } else if (now - session.lastVoiceAt >= VAD_END_SILENCE_MS) {
+          requestRecordingStop("silence");
+          return;
+        }
+      }
+      session.vadFrame = window.requestAnimationFrame(monitor);
+    };
+    session.vadFrame = window.requestAnimationFrame(monitor);
+    return true;
+  } catch (_error) {
+    cleanupVoiceActivityMonitor(session);
+    session.vadAvailable = false;
+    return false;
+  }
 }
 
 async function toggleRecording() {
   const button = document.querySelector("#voiceButton");
-  if (voicePreparing) {
+  if (activeVoiceSession?.recorder.state === "recording") {
+    requestRecordingStop("manual");
+    showToast("录音结束，正在识别…");
+    return;
+  }
+  if (voiceInputMode === "preparing") {
     showToast("正在获取麦克风，请稍候");
     return;
   }
-  if (voiceProcessing) {
+  if (voiceInputMode === "processing") {
     showToast("上一段语音还在识别，请稍候");
-    return;
-  }
-  if (mediaRecorder?.state === "recording") {
-    stopRecording();
-    showToast("录音结束，正在识别…");
     return;
   }
   if (!navigator.mediaDevices || !window.MediaRecorder) {
@@ -926,8 +1288,11 @@ async function toggleRecording() {
   }
 
   let stream = null;
+  const captureGeneration = ++voiceCaptureGeneration;
   try {
-    voicePreparing = true;
+    speechRequestId += 1;
+    stopSpeaking();
+    setVoiceStatus("正在请求麦克风权限…", "preparing");
     button.disabled = true;
     button.setAttribute("aria-label", "正在获取麦克风");
     stream = await navigator.mediaDevices.getUserMedia({
@@ -937,92 +1302,160 @@ async function toggleRecording() {
         autoGainControl: true,
       },
     });
-    recordedChunks = [];
-    const mimeType = preferredRecordingMimeType();
-    if (!mimeType) {
-      throw new Error("当前浏览器不支持 WebM 或 Ogg 录音");
+    if (
+      captureGeneration !== voiceCaptureGeneration ||
+      voicePageHidden
+    ) {
+      stopVoiceStream(stream);
+      return;
     }
-    const recorder = new MediaRecorder(stream, { mimeType });
-    mediaRecorder = recorder;
-    recorder.addEventListener("dataavailable", (event) => {
-      if (event.data.size > 0) recordedChunks.push(event.data);
-    });
-    recorder.addEventListener("stop", async () => {
-      window.clearTimeout(recordingTimer);
-      recordingTimer = null;
-      stream.getTracks().forEach((track) => track.stop());
-      voiceProcessing = true;
-      button.disabled = true;
-      button.classList.add("processing");
-      button.setAttribute("aria-label", "语音识别处理中");
-
-      const actualMimeType = recorder.mimeType || mimeType || "audio/webm";
-      const audio = new Blob(recordedChunks, { type: actualMimeType });
-      const form = new FormData();
-      form.append("audio", audio, recordingFileName(actualMimeType));
-      form.append("execute", "0");
-      showToast("正在识别中文…");
-
-      const controller = new AbortController();
-      const timeout = window.setTimeout(
-        () => controller.abort(),
-        VOICE_REQUEST_TIMEOUT_MS,
+    activeVoiceStream = stream;
+    const mimeType = preferredRecordingMimeType();
+    const recorder = mimeType
+      ? new MediaRecorder(stream, { mimeType })
+      : new MediaRecorder(stream);
+    const actualMimeType = String(recorder.mimeType || mimeType)
+      .split(";", 1)[0]
+      .toLowerCase();
+    if (!SUPPORTED_RECORDING_MIME_TYPES.has(actualMimeType)) {
+      stopVoiceStream(stream);
+      resetVoiceButton();
+      setVoiceStatus(
+        "当前浏览器录音格式暂不支持，请使用 Chrome 或 Edge。",
+        "error",
       );
-      try {
-        const response = await fetch("/api/voice/transcribe", {
-          method: "POST",
-          body: form,
-          signal: controller.signal,
-        });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || "语音识别失败");
-        const transcription = result.transcription;
-        const seconds = (transcription.latency_ms / 1000).toFixed(1);
-        const fallback = transcription.fallback_from
-          ? "（云端不可用，已自动转为本地）"
-          : "";
-        showToast(
-          `${transcription.provider_label}${fallback}识别完成，用时 ${seconds} 秒`,
-        );
-        await sendMessage(transcription.text);
-      } catch (error) {
-        const message =
-          error.name === "AbortError"
-            ? "语音识别超过25秒，请重试"
-            : error.message;
-        addMessage(`语音识别失败：${message}`, "assistant");
-      } finally {
-        window.clearTimeout(timeout);
-        voiceProcessing = false;
-        button.disabled = false;
-        button.classList.remove("processing");
-        button.setAttribute("aria-label", "语音输入");
-        if (mediaRecorder === recorder) mediaRecorder = null;
-      }
+      showToast("当前浏览器录音格式暂不支持，请使用 Chrome 或 Edge");
+      return;
+    }
+    const session = {
+      recorder,
+      stream,
+      requestedMimeType: mimeType,
+      recordingStartedAt: null,
+      chunks: [],
+      recordingTimer: null,
+      vadFrame: null,
+      vadAvailable: false,
+      vadCoveredFromStart: false,
+      audioContext: null,
+      vadSource: null,
+      vadAnalyser: null,
+      speechDetected: false,
+      peakRms: 0,
+      noSpeechHinted: false,
+      stopRequested: false,
+      stopHandled: false,
+      discard: false,
+    };
+    activeVoiceSession = session;
+    recorder.addEventListener("dataavailable", (event) => {
+      if (event.data.size > 0) session.chunks.push(event.data);
     });
-    recorder.start(250);
-    voicePreparing = false;
-    button.disabled = false;
-    button.setAttribute("aria-label", "语音输入");
-    button.classList.add("recording");
-    recordingTimer = window.setTimeout(() => {
+    recorder.addEventListener("stop", () => {
+      void handleRecorderStopped(session);
+    });
+    recorder.addEventListener("error", () => {
+      abortVoiceSession(session, "录音发生错误，请检查麦克风后重试。");
+    });
+    for (const track of stream.getTracks()) {
+      track.addEventListener("ended", () => {
+        if (!session.stopRequested && !session.stopHandled) {
+          abortVoiceSession(session, "麦克风连接已断开，请重新尝试。");
+        }
+      });
+    }
+    session.recordingStartedAt = window.performance.now();
+    recorder.start();
+    session.recordingTimer = window.setTimeout(() => {
       if (recorder.state === "recording") {
-        stopRecording();
-        showToast("已录满10秒，正在识别…");
+        const obviousSilence = isObviouslySilentSession(session);
+        requestRecordingStop("max_duration", { discard: obviousSilence });
+        showToast(
+          obviousSilence
+            ? "没有听到清晰声音，本次未提交识别"
+            : "已录满10秒，正在识别…",
+        );
       }
     }, MAX_RECORDING_MS);
-    showToast("正在聆听，再点一次结束；最多录10秒");
-  } catch (error) {
-    stream?.getTracks().forEach((track) => track.stop());
-    voicePreparing = false;
     button.disabled = false;
-    button.classList.remove("recording", "processing");
-    button.setAttribute("aria-label", "语音输入");
-    showToast(
-      error.message.includes("WebM")
-        ? `${error.message}，请使用 Edge 或 Chrome`
-        : "无法使用麦克风，请检查浏览器权限",
+    button.setAttribute("aria-label", "结束语音输入");
+    button.classList.add("recording");
+    setVoiceStatus("正在聆听；可再次点击麦克风结束。", "listening");
+    const vadEnabled = await startVoiceActivityMonitor(session);
+    if (
+      activeVoiceSession !== session ||
+      session.stopRequested ||
+      recorder.state !== "recording"
+    ) {
+      return;
+    }
+    setVoiceStatus(
+      vadEnabled
+        ? "正在聆听，说完后会自动识别。"
+        : "正在聆听；请再次点击麦克风结束。",
+      "listening",
     );
+    showToast(
+      vadEnabled
+        ? "正在聆听，说完后会自动结束"
+        : "正在聆听，请再次点击麦克风结束",
+    );
+  } catch (error) {
+    if (captureGeneration !== voiceCaptureGeneration) {
+      stopVoiceStream(stream);
+      return;
+    }
+    if (activeVoiceSession) {
+      abortVoiceSession(activeVoiceSession, "无法使用麦克风，请检查浏览器权限。");
+    } else {
+      stopVoiceStream(stream);
+      resetVoiceButton();
+      setVoiceStatus("无法使用麦克风，请检查浏览器权限。", "error");
+    }
+    showToast("无法使用麦克风，请检查浏览器权限");
+  }
+}
+
+function releaseVoiceResources() {
+  voicePageHidden = true;
+  voiceCaptureGeneration += 1;
+  speechRequestId += 1;
+  stopSpeaking();
+  activeVoiceRequestController?.abort("pagehide");
+  activeVoiceRequestController = null;
+  const session = activeVoiceSession;
+  if (session) {
+    session.discard = true;
+    session.stopRequested = true;
+    session.stopHandled = true;
+    cleanupVoiceSession(session);
+    try {
+      if (session.recorder.state === "recording") session.recorder.stop();
+    } catch (_error) {
+      // 页面退出时不再显示错误。
+    }
+    stopVoiceStream(session.stream);
+    activeVoiceSession = null;
+  } else {
+    stopVoiceStream(activeVoiceStream);
+  }
+  resetVoiceButton();
+  setVoiceStatus("点击麦克风开始说话；说完后会自动识别。", "idle");
+}
+
+function restoreVoicePage() {
+  voicePageHidden = false;
+  if (!activeVoiceSession) {
+    resetVoiceButton();
+    setVoiceStatus("点击麦克风开始说话；说完后会自动识别。", "idle");
+  }
+}
+
+function handleVoiceVisibilityChange() {
+  if (document.visibilityState === "hidden") {
+    if (voiceCaptureActive()) releaseVoiceResources();
+  } else if (voicePageHidden) {
+    restoreVoicePage();
   }
 }
 
@@ -1036,6 +1469,9 @@ document.querySelector("#chatForm").addEventListener("submit", async (event) => 
 });
 
 document.querySelector("#voiceButton").addEventListener("click", toggleRecording);
+window.addEventListener("pagehide", releaseVoiceResources);
+window.addEventListener("pageshow", restoreVoicePage);
+document.addEventListener("visibilitychange", handleVoiceVisibilityChange);
 document.querySelector("#voiceReplyButton").addEventListener("click", toggleVoiceReply);
 document.querySelector("#ttsVoiceSelect").addEventListener("change", updateTtsVoice);
 document.querySelector("#previewVoiceButton").addEventListener("click", previewVoice);

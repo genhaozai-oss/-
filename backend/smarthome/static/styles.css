@@ -560,6 +560,31 @@ h1 span {
   animation: pulse 1.2s infinite;
 }
 
+.voice-status {
+  min-height: 16px;
+  margin: 6px 2px 0;
+  color: #9db0a7;
+  font-size: 10px;
+}
+
+.voice-status[data-state="preparing"],
+.voice-status[data-state="listening"],
+.voice-status[data-state="speech"] {
+  color: #f0c5b2;
+}
+
+.voice-status[data-state="processing"] {
+  color: #c6dcd2;
+}
+
+.voice-status[data-state="done"] {
+  color: #9fd2b6;
+}
+
+.voice-status[data-state="error"] {
+  color: #f0aa9f;
+}
+
 @keyframes pulse {
   50% {
     transform: scale(0.92);
