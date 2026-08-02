@@ -35,6 +35,9 @@ let notificationClaimInFlight = false;
 const displayedNotificationIds = new Set();
 let refreshStatePromise = null;
 let weatherRequestPromise = null;
+let chatRequestInFlight = false;
+let chatHistoryPromise = null;
+const CHAT_HISTORY_TIMEOUT_MS = 2500;
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -294,6 +297,167 @@ function addMessage(text, role) {
     role === "assistant" ? cleanAssistantText(text) : text;
   messages.append(element);
   messages.scrollTop = messages.scrollHeight;
+  return element;
+}
+
+function setControlChatLocked(control, busy) {
+  if (busy) {
+    if (!control.disabled) control.dataset.chatLocked = "true";
+    control.disabled = true;
+  } else if (control.dataset.chatLocked === "true") {
+    delete control.dataset.chatLocked;
+    control.disabled = false;
+  }
+}
+
+function syncChatControls() {
+  const form = document.querySelector("#chatForm");
+  form.setAttribute("aria-busy", String(chatRequestInFlight));
+  document.querySelectorAll(
+    "#chatForm input, #chatForm button:not(#voiceButton), [data-message], "
+      + "#homeSceneButton, #deviceList .switch, #deviceList input, "
+      + "#sceneList button, #automationList button, "
+      + "#autoFlowToggleButton, #autoFlowRunButton, "
+      + "#proactiveToggleButton, #proactiveRunButton, [data-undo-action]",
+  ).forEach((control) => {
+    setControlChatLocked(control, chatRequestInFlight);
+  });
+  const voiceBusy = ["preparing", "listening", "speech", "processing"].includes(
+    voiceInputMode,
+  );
+  document.querySelector("#voiceButton").disabled =
+    chatRequestInFlight || voiceBusy;
+}
+
+function setChatBusy(busy) {
+  chatRequestInFlight = busy;
+  syncChatControls();
+}
+
+async function loadConversationHistory() {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(
+    () => controller.abort("history-timeout"),
+    CHAT_HISTORY_TIMEOUT_MS,
+  );
+  let result;
+  try {
+    result = await api(
+      `/api/chat/history?session_id=${encodeURIComponent(sessionId)}`,
+      { signal: controller.signal },
+    );
+  } finally {
+    window.clearTimeout(timeout);
+  }
+  const history = Array.isArray(result.messages) ? result.messages : [];
+  if (!history.length) return;
+  const container = document.querySelector("#messages");
+  const liveMessages = Array.from(container.children).filter(
+    (element) => element.dataset.initialMessage !== "true",
+  );
+  container.replaceChildren();
+  history.forEach((message) => addMessage(message.content, message.role));
+  liveMessages.forEach((message) => container.append(message));
+  container.scrollTop = container.scrollHeight;
+}
+
+function actionReceiptText(action, result) {
+  const deviceName = action.device_name || "设备";
+  if (action.state) {
+    return `✓ ${deviceName} 已${action.state === "on" ? "开启" : "关闭"}`;
+  }
+  if (action.capability) {
+    const labels = {
+      speed: "风速",
+      brightness: "亮度",
+      position: "位置",
+      target_temperature: "目标温度",
+    };
+    const numericValue = Number(action.value);
+    const displayValue = Number.isInteger(numericValue)
+      ? numericValue.toFixed(0)
+      : String(numericValue);
+    return (
+      `✓ ${deviceName} ${labels[action.capability] || action.capability}`
+      + ` ${displayValue}${action.unit || ""}`
+    );
+  }
+  if (action.alarm_id) {
+    const label = action.label || result.alarm?.label || "提醒";
+    return `✓ ${action.deleted ? "已取消" : "已创建"}${label}`;
+  }
+  if (action.name) {
+    const room = action.room ? ` · 位置${action.room}` : "";
+    return `✓ 设备已命名为${action.name}${room}`;
+  }
+  if (action.room) return `✓ ${deviceName} 位置已更新为${action.room}`;
+  return "✓ 操作已完成";
+}
+
+function appendActionReceipt(messageElement, result) {
+  const actions = Array.isArray(result.actions) ? result.actions : [];
+  if (!actions.length && !result.ai) return;
+  const receipt = document.createElement("div");
+  receipt.className = "action-receipt";
+  const source = document.createElement("strong");
+  const cloud = result.ai?.provider === "cloud";
+  source.textContent = cloud
+    ? actions.length
+      ? `云端理解 · 本地安全执行 · ${result.ai.model || "AI"}`
+      : `云端理解 · ${result.ai.model || "AI"}`
+    : "本地规则 · 边缘直接执行";
+  receipt.append(source);
+  actions.forEach((action) => {
+    const item = document.createElement("span");
+    item.textContent = actionReceiptText(action, result);
+    receipt.append(item);
+  });
+
+  const hasUndoableDeviceAction = actions.some(
+    (action) => action.device_id && (action.state || action.capability),
+  ) && result.intent !== "undo_last_action";
+  if (hasUndoableDeviceAction) {
+    document.querySelectorAll("[data-undo-action]").forEach((button) => {
+      button.disabled = true;
+      button.title = "已有更新的设备操作";
+    });
+    const undo = document.createElement("button");
+    undo.type = "button";
+    undo.dataset.undoAction = "latest";
+    undo.textContent = "撤销最近一次设备操作";
+    undo.addEventListener("click", async () => {
+      undo.disabled = true;
+      const undone = await sendMessage("撤销刚才的操作");
+      if (!undone) undo.disabled = false;
+    });
+    receipt.append(undo);
+  }
+  if (result.auto_flow) {
+    const decision = document.createElement("button");
+    decision.type = "button";
+    decision.textContent = "查看决策链";
+    decision.addEventListener("click", () => {
+      document.querySelector(".auto-flow-card").scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    });
+    receipt.append(decision);
+  }
+  messageElement.append(receipt);
+  const messages = document.querySelector("#messages");
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function highlightActionDevices(actions) {
+  const deviceIds = new Set(
+    (actions || []).map((action) => action.device_id).filter(Boolean),
+  );
+  document.querySelectorAll(".device[data-device-id]").forEach((element) => {
+    if (!deviceIds.has(element.dataset.deviceId)) return;
+    element.classList.add("just-updated");
+    window.setTimeout(() => element.classList.remove("just-updated"), 1800);
+  });
 }
 
 function renderDevices(devices) {
@@ -316,6 +480,7 @@ function renderDevices(devices) {
   for (const device of devices) {
     const element = document.createElement("div");
     element.className = `device${activeDeviceId === device.id ? " selected" : ""}`;
+    element.dataset.deviceId = device.id;
     element.innerHTML = `
       <span class="device-icon">${icons[device.type] || "⌁"}</span>
       <span>
@@ -864,6 +1029,7 @@ async function refreshStateOnce() {
   renderMemories(data.memories || []);
   renderEvents(data.events || []);
   await refreshWeather(data.settings);
+  syncChatControls();
 
   await claimNotification();
 }
@@ -879,7 +1045,17 @@ async function refreshState() {
 }
 
 async function sendMessage(message) {
+  if (chatHistoryPromise) await chatHistoryPromise;
+  if (chatRequestInFlight) {
+    showToast("上一条指令还在处理中，请稍候");
+    return null;
+  }
+  setChatBusy(true);
   addMessage(message, "user");
+  const pending = addMessage("栖居正在理解并检查设备状态…", "assistant");
+  pending.classList.add("thinking");
+  pending.setAttribute("aria-busy", "true");
+  pending.setAttribute("role", "status");
   try {
     const result = await api("/api/chat", {
       method: "POST",
@@ -889,7 +1065,10 @@ async function sendMessage(message) {
         session_id: sessionId,
       }),
     });
-    addMessage(result.reply, "assistant");
+    pending.classList.remove("thinking");
+    pending.removeAttribute("aria-busy");
+    pending.textContent = cleanAssistantText(result.reply);
+    appendActionReceipt(pending, result);
     speakAssistant(result.reply);
     if (result.context_device_id) {
       state.selectedDeviceId = null;
@@ -897,8 +1076,15 @@ async function sendMessage(message) {
     }
     if (result.intent === "home_arrival") showSceneBanner();
     await refreshState();
+    highlightActionDevices(result.actions);
+    return result;
   } catch (error) {
-    addMessage(`操作失败：${error.message}`, "assistant");
+    pending.classList.remove("thinking");
+    pending.removeAttribute("aria-busy");
+    pending.textContent = `操作失败：${error.message}`;
+    return null;
+  } finally {
+    setChatBusy(false);
   }
 }
 
@@ -934,7 +1120,7 @@ function setVoiceStatus(message, mode = "idle") {
 
 function resetVoiceButton() {
   const button = document.querySelector("#voiceButton");
-  button.disabled = false;
+  button.disabled = chatRequestInFlight;
   button.classList.remove("recording", "processing");
   button.setAttribute("aria-label", "语音输入");
 }
@@ -1605,5 +1791,10 @@ updateDesktopNotificationButton();
 loadTtsVoices().catch(() => {
   document.querySelector("#ttsProviderLabel").textContent = "音色状态读取失败";
 });
-refreshState().catch((error) => showToast(error.message));
+chatHistoryPromise = loadConversationHistory().catch((error) => {
+  showToast(`对话记录读取失败：${error.message}`);
+});
+chatHistoryPromise.then(() => {
+  refreshState().catch((error) => showToast(error.message));
+});
 window.setInterval(() => refreshState().catch(() => {}), 5000);

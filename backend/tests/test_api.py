@@ -54,6 +54,26 @@ def test_index_includes_automatic_voice_endpoint_detection(client):
     assert "cleanupVoiceActivityMonitor" in script
 
 
+def test_index_includes_persistent_chat_feedback(client):
+    html = client.get("/").get_data(as_text=True)
+    script = client.get("/app.js").get_data(as_text=True)
+    styles = client.get("/styles.css").get_data(as_text=True)
+
+    assert 'role="log"' in html
+    assert 'aria-live="polite"' in html
+    assert "/api/chat/history" in script
+    assert "CHAT_HISTORY_TIMEOUT_MS = 2500" in script
+    assert "栖居正在理解并检查设备状态" in script
+    assert "appendActionReceipt" in script
+    assert "chatRequestInFlight" in script
+    assert "撤销最近一次设备操作" in script
+    assert "dataset.deviceId" in script
+    assert ".action-receipt" in styles
+    assert ".assistant-message.thinking" in styles
+    assert ".device.just-updated" in styles
+    assert "prefers-reduced-motion: reduce" in styles
+
+
 def test_index_includes_persistent_automation_manager(client):
     html = client.get("/").get_data(as_text=True)
     script = client.get("/app.js").get_data(as_text=True)
@@ -306,6 +326,94 @@ def test_alarm_can_be_created_and_deleted(client):
 
     response = client.delete(f"/api/alarms/{alarm_id}")
     assert response.status_code == 204
+
+
+def test_labeled_alarm_can_be_cancelled_in_conversation(client):
+    created = client.post(
+        "/api/chat",
+        json={"message": "晚上八点提醒我喝水", "session_id": "alarm-session"},
+    ).get_json()
+
+    assert created["intent"] == "create_alarm"
+    assert created["alarm"]["label"] == "喝水"
+
+    cancelled = client.post(
+        "/api/chat",
+        json={"message": "取消喝水提醒", "session_id": "alarm-session"},
+    ).get_json()
+
+    assert cancelled["intent"] == "cancel_alarm"
+    assert cancelled["actions"][0]["deleted"] is True
+    assert client.get("/api/state").get_json()["alarms"] == []
+
+
+def test_alarm_label_with_negative_word_is_not_mistaken_for_cancel(client):
+    result = client.post(
+        "/api/chat",
+        json={"message": "10分钟后提醒我不要忘记喝水"},
+    ).get_json()
+
+    assert result["intent"] == "create_alarm"
+    assert result["alarm"]["label"] == "不要忘记喝水"
+
+
+def test_alarm_with_time_can_be_cancelled_by_explicit_prefix(client):
+    created = client.post(
+        "/api/chat",
+        json={"message": "明天晚上八点提醒我喝水"},
+    ).get_json()
+
+    cancelled = client.post(
+        "/api/chat",
+        json={"message": "取消明天晚上八点提醒我的闹钟"},
+    ).get_json()
+
+    assert created["intent"] == "create_alarm"
+    assert cancelled["intent"] == "cancel_alarm"
+    assert cancelled["actions"][0]["alarm_id"] == created["alarm"]["id"]
+
+
+def test_alarm_label_may_contain_delete_word(client):
+    result = client.post(
+        "/api/chat",
+        json={"message": "晚上九点提醒我删除临时文件"},
+    ).get_json()
+
+    assert result["intent"] == "create_alarm"
+    assert result["alarm"]["label"] == "删除临时文件"
+
+
+def test_natural_do_not_phrase_cancels_the_only_alarm(client):
+    created = client.post(
+        "/api/chat",
+        json={"message": "10分钟后提醒我喝水"},
+    ).get_json()
+    cancelled = client.post(
+        "/api/chat",
+        json={"message": "不要这个提醒了"},
+    ).get_json()
+
+    assert created["intent"] == "create_alarm"
+    assert cancelled["intent"] == "cancel_alarm"
+    assert cancelled["actions"][0]["alarm_id"] == created["alarm"]["id"]
+
+
+def test_local_chat_messages_are_restored_from_history(client):
+    response = client.post(
+        "/api/chat",
+        json={"message": "打开客厅风扇", "session_id": "local-history"},
+    )
+    assert response.status_code == 200
+    reply = response.get_json()["reply"]
+
+    history = client.get(
+        "/api/chat/history", query_string={"session_id": "local-history"}
+    ).get_json()["messages"]
+
+    assert history == [
+        {"role": "user", "content": "打开客厅风扇"},
+        {"role": "assistant", "content": reply},
+    ]
 
 
 def test_invalid_environment_is_rejected(client):

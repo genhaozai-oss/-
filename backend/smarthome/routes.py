@@ -50,6 +50,37 @@ from .weather import geocode_location, get_weather
 
 api = Blueprint("api", __name__)
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+WEATHER_ACTION_WORDS = (
+    "打开",
+    "开启",
+    "关闭",
+    "关掉",
+    "调到",
+    "调成",
+    "记住",
+    "忘记",
+    "删除",
+    "取消",
+    "如果",
+    "就",
+    "自动",
+    "以后",
+    "设置",
+    "提醒",
+    "场景",
+)
+WEATHER_QUERY_WORDS = (
+    "怎么样",
+    "如何",
+    "多少",
+    "几度",
+    "会不会",
+    "会下雨",
+    "有雨吗",
+    "预报",
+    "查询",
+    "查看",
+)
 
 
 def error(message, status=400):
@@ -59,6 +90,19 @@ def error(message, status=400):
 def normalize_session_id(value):
     value = str(value or "").strip()
     return value if SESSION_ID_PATTERN.fullmatch(value) else "default"
+
+
+def is_direct_weather_query(message):
+    normalized = str(message or "").strip()
+    mentions_weather = any(
+        word in normalized for word in ("天气", "下雨", "带伞")
+    )
+    asks_weather = any(word in normalized for word in WEATHER_QUERY_WORDS) or (
+        mentions_weather and normalized.endswith(("吗", "嘛"))
+    )
+    return mentions_weather and asks_weather and not any(
+        word in normalized for word in WEATHER_ACTION_WORDS
+    )
 
 
 def run_saved_scene_from_message(message):
@@ -169,7 +213,7 @@ def _process_message_core(message, selected_device_id=None, session_id="default"
             result["reply"] += weather["summary"]
         return result
 
-    if "天气" in message or "下雨" in message or "带伞" in message:
+    if is_direct_weather_query(message):
         weather = get_weather(database.get_settings())
         return {
             "intent": "weather_query",
@@ -190,12 +234,17 @@ def _process_message_core(message, selected_device_id=None, session_id="default"
         )
         if ai_result:
             return ai_result
+        return result
 
     interpreter = current_app.extensions["llm_interpreter"]
     plan = interpreter.classify(message, database.list_devices())
     llm_result = apply_llm_plan(plan)
     if llm_result:
         result = llm_result
+        result["ai"] = {
+            "provider": "cloud",
+            "model": getattr(interpreter, "model", "AI"),
+        }
     return result
 
 
@@ -256,18 +305,27 @@ def _process_message(message, selected_device_id=None, session_id="default"):
 
 
 def process_message(message, selected_device_id=None, session_id="default"):
+    session_id = normalize_session_id(session_id)
     try:
-        return _process_message(
+        result = _process_message(
             message,
             selected_device_id,
             session_id,
         )
     except DeviceCommandError as exc:
-        return {
+        result = {
             "intent": "device_command_failed",
             "reply": str(exc),
             "actions": [],
         }
+    if str(message or "").strip():
+        database.add_conversation_message(session_id, "user", str(message).strip())
+        database.add_conversation_message(
+            session_id,
+            "assistant",
+            result.get("reply", ""),
+        )
+    return result
 
 
 @api.get("/")
@@ -348,6 +406,14 @@ def chat():
             payload.get("selected_device_id"),
             payload.get("session_id"),
         )
+    )
+
+
+@api.get("/api/chat/history")
+def chat_history():
+    session_id = normalize_session_id(request.args.get("session_id"))
+    return jsonify(
+        {"messages": database.list_conversation_messages(session_id)}
     )
 
 

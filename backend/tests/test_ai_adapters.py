@@ -8,6 +8,7 @@ from smarthome.voice import SpeechRecognitionError, SpeechRecognizer
 
 class FakeLlm:
     enabled = True
+    model = "test-model"
 
     def classify(self, message, devices):
         assert message == "能不能让客厅凉快一点"
@@ -179,6 +180,27 @@ class FakeDynamicToolLlm:
         return {"role": "assistant", "content": self.reply}
 
 
+class FakeFailingSharedLlm:
+    enabled = True
+    model = "test-model"
+
+    def __init__(self):
+        self.calls = []
+        self.last_error = None
+
+    def chat(self, _messages, **_options):
+        self.calls.append("chat")
+        self.last_error = {"message": "云端暂时不可用"}
+        return None
+
+    def classify(self, _message, _devices):
+        self.calls.append("classify")
+        return {
+            "intent": "conversation",
+            "reply": "这次调用不应该发生。",
+        }
+
+
 def test_unknown_text_can_use_validated_llm_plan(app, client):
     app.extensions["llm_interpreter"] = FakeLlm()
     result = client.post(
@@ -188,6 +210,21 @@ def test_unknown_text_can_use_validated_llm_plan(app, client):
     assert result["intent"] == "device_control"
     assert result["actions"][0]["device_id"] == "fan-1"
     assert result["actions"][0]["state"] == "on"
+    assert result["ai"] == {"provider": "cloud", "model": "test-model"}
+
+
+def test_cloud_failure_is_not_retried_by_legacy_classifier(app, client):
+    fake = FakeFailingSharedLlm()
+    app.extensions["assistant_agent"] = SmartHomeAgent(fake)
+    app.extensions["llm_interpreter"] = fake
+
+    result = client.post(
+        "/api/chat",
+        json={"message": "陪我聊聊今天的心情", "session_id": "failed-cloud"},
+    ).get_json()
+
+    assert result["intent"] == "unknown"
+    assert fake.calls == ["chat"]
 
 
 def test_voice_transcription_runs_through_same_intent_pipeline(app, client):
@@ -417,6 +454,61 @@ def test_explicit_weather_query_bypasses_cloud_conversation(app, client):
     assert fake.requests == []
 
 
+def test_weather_with_device_action_reaches_cloud_agent(app, client):
+    fake = FakeDynamicToolLlm(
+        "control_device",
+        '{"device_name":"客厅灯","state":"on"}',
+        "外面下雨，已为你打开客厅灯。",
+    )
+    app.extensions["assistant_agent"] = SmartHomeAgent(fake)
+
+    result = client.post(
+        "/api/chat",
+        json={
+            "message": "外面下雨了，帮我打开客厅灯",
+            "session_id": "weather-action-routing",
+        },
+    ).get_json()
+
+    assert result["intent"] == "control_device"
+    assert result["actions"][0]["device_id"] == "light-1"
+    assert fake.calls == 2
+
+
+def test_weather_comfort_request_reaches_cloud_agent(app, client):
+    fake = FakeDynamicToolLlm(
+        "control_device",
+        '{"device_name":"客厅风扇","state":"on"}',
+        "天气有点热，已经打开风扇帮你凉快。",
+    )
+    app.extensions["assistant_agent"] = SmartHomeAgent(fake)
+
+    result = client.post(
+        "/api/chat",
+        json={"message": "天气太热，帮我凉快", "session_id": "weather-comfort"},
+    ).get_json()
+
+    assert result["intent"] == "control_device"
+    assert result["actions"][0]["device_id"] == "fan-1"
+
+
+def test_environment_action_request_reaches_cloud_agent(app, client):
+    fake = FakeDynamicToolLlm(
+        "control_device",
+        '{"device_name":"抽湿器演示","state":"on"}',
+        "湿度偏高，已经开启安全模拟抽湿。",
+    )
+    app.extensions["assistant_agent"] = SmartHomeAgent(fake)
+
+    result = client.post(
+        "/api/chat",
+        json={"message": "湿度太高了，帮我抽湿", "session_id": "humidity-action"},
+    ).get_json()
+
+    assert result["intent"] == "control_device"
+    assert result["actions"][0]["device_id"] == "dehumidifier-1"
+
+
 def test_agent_retries_with_tool_when_action_request_returns_only_text(app, client):
     fake = FakeRetryToolLlm()
     app.extensions["assistant_agent"] = SmartHomeAgent(fake)
@@ -469,6 +561,27 @@ def test_agent_remembers_user_preference(app, client):
     assert result["intent"] == "remember_preference"
     with app.app_context():
         assert database.get_user_preferences()["fan_speed"] == "60"
+
+
+def test_environment_preference_reaches_cloud_agent(app, client):
+    fake = FakeDynamicToolLlm(
+        "remember_preference",
+        '{"preference":"humidity","value":55}',
+        "记住了，你喜欢55%的湿度。",
+    )
+    app.extensions["assistant_agent"] = SmartHomeAgent(fake)
+
+    result = client.post(
+        "/api/chat",
+        json={
+            "message": "记住我的舒适湿度是55%",
+            "session_id": "humidity-preference",
+        },
+    ).get_json()
+
+    assert result["intent"] == "remember_preference"
+    with app.app_context():
+        assert database.get_user_preferences()["humidity"] == "55"
 
 
 def test_agent_forgets_only_requested_preference(app, client):

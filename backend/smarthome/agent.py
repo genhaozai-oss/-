@@ -453,7 +453,6 @@ class SmartHomeAgent:
                 "actions": [],
                 "ai": {"provider": "cloud", "model": self.llm.model},
             }
-            self._remember(session_id, message, result["reply"])
             return result
 
         messages.append(
@@ -484,7 +483,6 @@ class SmartHomeAgent:
         if not reply:
             reply = self._fallback_reply(outputs)
         result = self._build_result(outputs, reply)
-        self._remember(session_id, message, result["reply"])
         return result
 
     @staticmethod
@@ -1013,8 +1011,3 @@ class SmartHomeAgent:
             if value is not None:
                 result[key] = value
         return result
-
-    @staticmethod
-    def _remember(session_id, user_message, assistant_message):
-        database.add_conversation_message(session_id, "user", user_message)
-        database.add_conversation_message(session_id, "assistant", assistant_message)

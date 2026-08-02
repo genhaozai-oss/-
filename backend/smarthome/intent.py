@@ -18,6 +18,45 @@ ALARM_TIME_PATTERN = re.compile(
     r"([零一二两三四五六七八九十\d]{1,3})\s*(?:点|时|:|：)\s*"
     r"(?:(半|[零一二两三四五六七八九十\d]{1,3})\s*分?)?"
 )
+RELATIVE_ALARM_PATTERN = re.compile(
+    r"([一二两三四五六七八九十\d]{1,3}|半)\s*"
+    r"(?:个)?(分钟|分|小时)后"
+)
+ALARM_CANCEL_WORDS = ("取消", "删除", "关掉")
+ALARM_CANCEL_PHRASES = (
+    "不要这个闹钟",
+    "这个闹钟不要",
+    "不要这个提醒",
+    "这个提醒不要",
+)
+ENVIRONMENT_INSTRUCTION_WORDS = (
+    "记住",
+    "忘记",
+    "偏好",
+    "喜欢",
+    "以后",
+    "如果",
+    "超过",
+    "高于",
+    "低于",
+    "少于",
+    "自动",
+    "打开",
+    "关闭",
+    "调到",
+    "设为",
+    "设置为",
+)
+ENVIRONMENT_QUERY_WORDS = (
+    "多少",
+    "怎么样",
+    "如何",
+    "几度",
+    "高吗",
+    "低吗",
+    "查询",
+    "查看",
+)
 CHINESE_DIGITS = {
     "零": 0,
     "一": 1,
@@ -53,6 +92,25 @@ def parse_number(text):
 
 def parse_alarm_time(message, now=None):
     now = now or datetime.now().astimezone()
+    relative_match = RELATIVE_ALARM_PATTERN.search(message)
+    if relative_match:
+        amount_text, unit = relative_match.groups()
+        if amount_text == "半":
+            return now + (
+                timedelta(minutes=30)
+                if unit == "小时"
+                else timedelta(seconds=30)
+            )
+        amount = parse_number(amount_text)
+        if amount is None:
+            return None
+        delta = (
+            timedelta(hours=amount)
+            if unit == "小时"
+            else timedelta(minutes=amount)
+        )
+        return now + delta
+
     match = ALARM_TIME_PATTERN.search(message)
     if not match:
         return None
@@ -78,6 +136,127 @@ def parse_alarm_time(message, now=None):
     elif day_word != "今天" and scheduled <= now:
         scheduled += timedelta(days=1)
     return scheduled
+
+
+def parse_alarm_label(message):
+    normalized = str(message or "").strip(" ，。！？,.!?")
+    for marker in ("提醒我", "叫我"):
+        if marker not in normalized:
+            continue
+        label = normalized.split(marker, 1)[1]
+        label = RELATIVE_ALARM_PATTERN.sub("", label)
+        label = ALARM_TIME_PATTERN.sub("", label)
+        label = label.strip(" ，。！？,.!?")
+        for prefix in ("记得", "要", "去"):
+            if label.startswith(prefix) and len(label) > len(prefix):
+                label = label.removeprefix(prefix).strip()
+        if label:
+            return label[:50]
+
+    label = RELATIVE_ALARM_PATTERN.sub("", normalized)
+    label = ALARM_TIME_PATTERN.sub("", label)
+    for word in (
+        "今天",
+        "明天",
+        "后天",
+        "早上",
+        "上午",
+        "中午",
+        "下午",
+        "晚上",
+        "凌晨",
+    ):
+        label = label.replace(word, "")
+    named_alarm = re.search(
+        r"(?:设置|创建|添加)(?:一个)?(.+?)(?:闹钟|提醒)$",
+        label,
+    )
+    if named_alarm:
+        label = named_alarm.group(1).strip(" ，。！？,.!?")
+        if label:
+            return label[:50]
+    return "起床提醒"
+
+
+def cancel_alarm(message, now=None):
+    alarms = database.list_alarms()
+    if not alarms:
+        return {
+            "intent": "cancel_alarm",
+            "reply": "现在没有待执行的闹钟。",
+            "actions": [],
+        }
+
+    normalized = str(message or "").strip(" ，。！？,.!?")
+    if any(word in normalized for word in ("全部", "所有")):
+        matches = alarms
+    else:
+        scheduled = parse_alarm_time(normalized, now)
+        matches = []
+        if scheduled:
+            matches = [
+                alarm
+                for alarm in alarms
+                if abs(
+                    (
+                        datetime.fromisoformat(alarm["scheduled_at"])
+                        - scheduled
+                    ).total_seconds()
+                )
+                < 60
+            ]
+
+        if not matches:
+            label = normalized
+            for word in (
+                *ALARM_CANCEL_WORDS,
+                "不要",
+                "这个",
+                "闹钟",
+                "提醒",
+                "全部",
+                "所有",
+                "了",
+            ):
+                label = label.replace(word, "")
+            label = RELATIVE_ALARM_PATTERN.sub("", label)
+            label = ALARM_TIME_PATTERN.sub("", label)
+            label = label.strip(" ，。！？,.!?")
+            if label:
+                matches = [
+                    alarm
+                    for alarm in alarms
+                    if label in alarm["label"] or alarm["label"] in label
+                ]
+            elif len(alarms) == 1:
+                matches = alarms
+
+    if not matches:
+        return {
+            "intent": "cancel_alarm",
+            "reply": "没有找到对应的待执行闹钟，请说出时间或提醒内容。",
+            "actions": [],
+        }
+    if len(matches) > 1 and not any(
+        word in normalized for word in ("全部", "所有")
+    ):
+        return {
+            "intent": "cancel_alarm",
+            "reply": "找到了多个闹钟，请说出具体时间或提醒内容。",
+            "actions": [],
+        }
+
+    for alarm in matches:
+        database.delete_alarm(alarm["id"])
+    labels = "、".join(dict.fromkeys(alarm["label"] for alarm in matches))
+    return {
+        "intent": "cancel_alarm",
+        "reply": f"已取消{labels}。",
+        "actions": [
+            {"alarm_id": alarm["id"], "label": alarm["label"], "deleted": True}
+            for alarm in matches
+        ],
+    }
 
 
 def rename_device(message, selected_device_id=None):
@@ -214,23 +393,55 @@ def handle_message(message, selected_device_id=None, now=None):
     if any(keyword in message for keyword in ("下班回家", "准备回家", "要回家了")):
         return run_home_arrival()
 
-    if "闹钟" in message or "叫我" in message or "提醒我" in message:
-        scheduled = parse_alarm_time(message, now)
+    scheduled_alarm = parse_alarm_time(message, now)
+    has_cancel_prefix = bool(
+        re.match(
+            r"^(?:请帮我|帮我|麻烦帮我|麻烦|请)?\s*(?:取消|删除|关掉)",
+            message,
+        )
+    )
+    is_alarm_creation = scheduled_alarm and any(
+        marker in message for marker in ("提醒我", "叫我")
+    ) and not has_cancel_prefix
+    is_alarm_cancel = (
+        any(word in message for word in ALARM_CANCEL_WORDS)
+        and any(word in message for word in ("闹钟", "提醒"))
+        and not is_alarm_creation
+    ) or any(
+        phrase in message for phrase in ALARM_CANCEL_PHRASES
+    )
+    if (
+        "闹钟" in message
+        or "叫我" in message
+        or "提醒我" in message
+        or is_alarm_cancel
+    ):
+        if is_alarm_cancel:
+            return cancel_alarm(message, now)
+        scheduled = scheduled_alarm
         if not scheduled:
             return {
                 "intent": "create_alarm",
                 "reply": "我没有听懂时间，可以说“明天早上七点设置闹钟”。",
                 "actions": [],
             }
-        alarm = database.create_alarm("起床提醒", scheduled.isoformat(timespec="seconds"))
+        label = parse_alarm_label(message)
+        alarm = database.create_alarm(label, scheduled.isoformat(timespec="seconds"))
         return {
             "intent": "create_alarm",
-            "reply": f"闹钟已设置在 {scheduled.strftime('%m月%d日 %H:%M')}。",
+            "reply": (
+                f"已设置“{label}”提醒："
+                f"{scheduled.strftime('%m月%d日 %H:%M')}。"
+            ),
             "actions": [{"alarm_id": alarm["id"]}],
             "alarm": alarm,
         }
 
-    if any(keyword in message for keyword in ("温度", "湿度", "室内环境")):
+    if (
+        any(keyword in message for keyword in ("温度", "湿度", "室内环境"))
+        and any(word in message for word in ENVIRONMENT_QUERY_WORDS)
+        and not any(word in message for word in ENVIRONMENT_INSTRUCTION_WORDS)
+    ):
         environment = database.get_environment()
         return {
             "intent": "environment_query",

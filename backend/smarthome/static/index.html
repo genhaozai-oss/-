@@ -112,8 +112,8 @@
             <p id="selectedDeviceText">当前未选择设备</p>
           </div>
         </div>
-        <div id="messages" class="messages">
-          <div class="message assistant-message">
+        <div id="messages" class="messages" role="log" aria-live="polite" aria-relevant="additions text">
+          <div class="message assistant-message" data-initial-message="true">
             我在呢。你可以用文字或语音控制已添加的设备，也可以说“我要下班回家了”。
           </div>
         </div>
