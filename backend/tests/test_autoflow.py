@@ -43,6 +43,132 @@ def test_auto_flow_is_enabled_by_default(client):
     )
 
 
+def test_autonomous_flow_action_creates_one_persistent_notification(app, client):
+    first = client.post(
+        "/api/environment",
+        json={"temperature": 30, "humidity": 55},
+    ).get_json()["auto_flow"]
+    second = client.post(
+        "/api/environment",
+        json={"temperature": 31, "humidity": 55},
+    ).get_json()["auto_flow"]
+
+    with app.app_context():
+        notifications = [
+            item
+            for item in database.list_notifications()
+            if item["kind"] == "auto_flow"
+        ]
+
+    assert first["notification_id"] == notifications[0]["id"]
+    assert second["status"] == "no_change"
+    assert len(notifications) == 1
+    assert notifications[0]["title"] == "AI 自动流已执行"
+
+
+def test_different_actions_in_same_second_create_two_notifications(
+    app,
+    client,
+    monkeypatch,
+):
+    fixed_now = database.now_iso()
+    monkeypatch.setattr(database, "now_iso", lambda: fixed_now)
+
+    turned_on = client.post(
+        "/api/environment",
+        json={"temperature": 31, "humidity": 55},
+    ).get_json()["auto_flow"]
+    turned_off = client.post(
+        "/api/environment",
+        json={"temperature": 20, "humidity": 55},
+    ).get_json()["auto_flow"]
+
+    with app.app_context():
+        notifications = [
+            item
+            for item in database.list_notifications()
+            if item["kind"] == "auto_flow"
+        ]
+
+    assert turned_on["actions"][0]["state"] == "on"
+    assert turned_off["actions"][0]["state"] == "off"
+    assert len(notifications) == 2
+
+
+def test_repeated_autonomous_safety_block_does_not_spam_notifications(app, client):
+    with app.app_context():
+        database.update_device(
+            "fan-1",
+            state="off",
+            online=False,
+            is_virtual=False,
+        )
+
+    first = client.post(
+        "/api/environment",
+        json={"temperature": 31, "humidity": 55},
+    ).get_json()["auto_flow"]
+    second = client.post(
+        "/api/environment",
+        json={"temperature": 32, "humidity": 55},
+    ).get_json()["auto_flow"]
+
+    with app.app_context():
+        notifications = [
+            item
+            for item in database.list_notifications()
+            if item["kind"] == "auto_flow"
+        ]
+
+    assert first["status"] == "blocked"
+    assert second["status"] == "blocked"
+    assert len(notifications) == 1
+    assert notifications[0]["title"] == "AI 自动流安全拦截"
+
+
+def test_opposite_safety_blocks_create_distinct_notifications(app, client):
+    with app.app_context():
+        database.update_device(
+            "fan-1",
+            state="off",
+            online=False,
+            is_virtual=False,
+        )
+
+    blocked_on = client.post(
+        "/api/environment",
+        json={"temperature": 31, "humidity": 55},
+    ).get_json()["auto_flow"]
+    with app.app_context():
+        database.update_device("fan-1", state="on")
+    blocked_off = client.post(
+        "/api/environment",
+        json={"temperature": 20, "humidity": 55},
+    ).get_json()["auto_flow"]
+
+    with app.app_context():
+        notifications = [
+            item
+            for item in database.list_notifications()
+            if item["kind"] == "auto_flow"
+        ]
+
+    assert blocked_on["blocked"][0]["state"] == "on"
+    assert blocked_off["blocked"][0]["state"] == "off"
+    assert len(notifications) == 2
+
+
+def test_autonomous_no_change_does_not_create_notification(app, client):
+    flow = client.post(
+        "/api/environment",
+        json={"temperature": 27, "humidity": 55},
+    ).get_json()["auto_flow"]
+
+    with app.app_context():
+        assert database.list_notifications() == []
+    assert flow["status"] == "no_change"
+
+
 def test_paused_flow_only_saves_environment(client):
     client.post(
         "/api/automations",
@@ -392,3 +518,4 @@ def test_page_contains_auto_flow_controls(client):
     assert '"/api/auto-flow"' in script
     assert '"/api/auto-flow/run"' in script
     assert 'auto_flow: "自动流"' in script
+    assert 'kind === "auto_flow"' in script

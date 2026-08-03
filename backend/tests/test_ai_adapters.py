@@ -555,7 +555,10 @@ def test_agent_remembers_user_preference(app, client):
 
     result = client.post(
         "/api/chat",
-        json={"message": "记住我的常用风速是60%", "session_id": "preference-session"},
+        json={
+            "message": "以后风扇打开时，用我习惯的六成风速",
+            "session_id": "preference-session",
+        },
     ).get_json()
 
     assert result["intent"] == "remember_preference"
@@ -574,7 +577,7 @@ def test_environment_preference_reaches_cloud_agent(app, client):
     result = client.post(
         "/api/chat",
         json={
-            "message": "记住我的舒适湿度是55%",
+            "message": "我喜欢屋里不要太潮，大约五成半",
             "session_id": "humidity-preference",
         },
     ).get_json()
@@ -598,7 +601,7 @@ def test_agent_forgets_only_requested_preference(app, client):
     result = client.post(
         "/api/chat",
         json={
-            "message": "忘掉我的常用风速",
+            "message": "把之前学到的风速偏好清掉",
             "session_id": "forget-preference",
         },
     ).get_json()
@@ -622,7 +625,7 @@ def test_agent_creates_persistent_environment_automation(app, client):
     result = client.post(
         "/api/chat",
         json={
-            "message": "以后湿度超过70%就自动打开抽湿器",
+            "message": "屋里太潮时就帮我打开抽湿器，阈值七成",
             "session_id": "automation-session",
         },
     ).get_json()

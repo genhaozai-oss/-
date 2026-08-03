@@ -1094,7 +1094,14 @@ def claim_notification(lease_seconds=30):
             SELECT * FROM notifications
             WHERE delivered_at IS NULL
               AND read_at IS NULL
-            ORDER BY id
+            ORDER BY
+              CASE kind
+                WHEN 'alarm' THEN 0
+                WHEN 'weather_warning' THEN 1
+                WHEN 'auto_flow' THEN 2
+                ELSE 3
+              END,
+              id
             """
         ).fetchall()
         row = next(

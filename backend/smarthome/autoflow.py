@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime
 
 from . import database
@@ -13,6 +14,7 @@ SETTING_KEY = "auto_flow_enabled"
 MAX_SENSOR_AGE_SECONDS = 10 * 60
 MANUAL_OVERRIDE_MINUTES = 30
 WATER_DEVICE_TYPES = {"humidifier", "dehumidifier"}
+AUTONOMOUS_NOTIFICATION_TRIGGERS = {"mqtt_sensor", "web_sensor"}
 
 
 def is_enabled():
@@ -153,12 +155,16 @@ def _safety_reason(plan, override_ids):
 
 
 def _blocked_item(plan, reason):
-    return {
+    item = {
         "device_id": plan["device_id"],
         "device_name": plan["device_name"],
         "operation": plan["operation"],
         "reason": reason,
     }
+    for field in ("state", "capability", "value"):
+        if plan.get(field) is not None:
+            item[field] = plan[field]
+    return item
 
 
 def _execute_plans(plans):
@@ -242,6 +248,55 @@ def _base_flow(enabled, environment, thresholds, active_overrides):
         "steps": [],
         "ran_at": database.now_iso(),
     }
+
+
+def _notification_digest(items):
+    fields = (
+        "device_id",
+        "operation",
+        "state",
+        "capability",
+        "value",
+        "reason",
+    )
+    signature = "|".join(
+        sorted(
+            ":".join(f"{field}={item.get(field, '')}" for field in fields)
+            for item in items
+        )
+    )
+    return hashlib.sha256(signature.encode("utf-8")).hexdigest()[:16]
+
+
+def _create_flow_notification(flow):
+    if flow["trigger"] not in AUTONOMOUS_NOTIFICATION_TRIGGERS:
+        return None
+    if flow["actions"]:
+        title = "AI 自动流已执行"
+        digest = _notification_digest(flow["actions"])
+        dedupe_key = f"auto-flow:executed:{flow['ran_at']}:{digest}"
+    elif flow["blocked"]:
+        title = "AI 自动流安全拦截"
+        digest = _notification_digest(flow["blocked"])
+        date_key = datetime.now().astimezone().date().isoformat()
+        dedupe_key = f"auto-flow:blocked:{date_key}:{digest}"
+    else:
+        return None
+
+    notification, created = database.create_notification(
+        "auto_flow",
+        title,
+        flow["summary"],
+        dedupe_key,
+        {
+            "trigger": flow["trigger"],
+            "status": flow["status"],
+            "environment": flow["environment"],
+            "actions": flow["actions"],
+            "blocked": flow["blocked"],
+        },
+    )
+    return notification if created else None
 
 
 def run_auto_flow(trigger="manual", force=False):
@@ -382,6 +437,9 @@ def run_auto_flow(trigger="manual", force=False):
             ),
         }
     )
+    notification = _create_flow_notification(flow)
+    if notification:
+        flow["notification_id"] = notification["id"]
     database.log_event("auto_flow", flow["summary"], flow)
     return flow
 

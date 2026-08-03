@@ -13,7 +13,7 @@ from .autoflow import (
     run_auto_flow,
     set_auto_flow_enabled,
 )
-from .automations import create_rule, list_rules
+from .automations import create_rule, handle_automation_message, list_rules
 from .context import (
     handle_context_message,
     remember_result_device,
@@ -27,7 +27,11 @@ from .devices import (
 from .home import run_home_arrival
 from .intent import handle_message
 from .learning import learn_from_result, observe_capability
-from .preferences import forget_preference, list_preferences
+from .preferences import (
+    forget_preference,
+    handle_preference_message,
+    list_preferences,
+)
 from .proactive import (
     handle_proactive_message,
     set_enabled as set_proactive_enabled,
@@ -265,6 +269,10 @@ def _process_message(message, selected_device_id=None, session_id="default"):
     )
     if result is None:
         result = handle_auto_flow_message(message)
+    if result is None:
+        result = handle_preference_message(message)
+    if result is None:
+        result = handle_automation_message(message, context_device_id)
     if result is None:
         result = handle_context_message(message, context_device_id)
     if result is None:

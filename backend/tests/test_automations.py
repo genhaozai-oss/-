@@ -33,6 +33,66 @@ def test_automation_rule_is_saved_and_runs_on_environment_update(client):
     assert state["automations"][0]["last_triggered_at"] is not None
 
 
+def test_natural_language_automation_works_without_cloud(client):
+    created = client.post(
+        "/api/chat",
+        json={"message": "以后湿度超过70%就自动打开抽湿器演示"},
+    ).get_json()
+
+    assert created["intent"] == "create_automation"
+    assert "本地保存" in created["reply"]
+    rule = created["automation"]
+    assert rule["description"] == "湿度高于70%时，打开抽湿器演示"
+
+    flow = client.post(
+        "/api/environment",
+        json={"temperature": 27, "humidity": 71},
+    ).get_json()
+
+    assert any(
+        action.get("automation_rule_id") == rule["id"]
+        and action["device_id"] == "dehumidifier-1"
+        for action in flow["actions"]
+    )
+
+
+def test_natural_language_level_automation_uses_registered_capability(client):
+    created = client.post(
+        "/api/chat",
+        json={"message": "温度高于29度，就把客厅风扇风速调到73%"},
+    ).get_json()
+
+    rule = created["automation"]
+    assert created["intent"] == "create_automation"
+    assert rule["action"] == "set_level"
+    assert rule["capability"] == "speed"
+    assert rule["value"] == 70
+
+
+def test_negative_automation_wording_does_not_create_rule(client):
+    for message in (
+        "不要在湿度超过70%时打开抽湿器演示",
+        "不用在湿度超过70%时打开抽湿器演示",
+        "不希望当湿度超过70%就打开抽湿器演示",
+        "禁止当湿度超过70%就打开抽湿器演示",
+        "我没让你当湿度超过70%就打开抽湿器演示",
+        "取消湿度超过70%时打开抽湿器演示",
+    ):
+        client.post("/api/chat", json={"message": message})
+
+    assert client.get("/api/state").get_json()["automations"] == []
+
+
+def test_automation_question_does_not_create_rule(client):
+    for message in (
+        "温度高于29度时打开客厅风扇可以吗",
+        "如果湿度超过70%就打开抽湿器演示好不好",
+    ):
+        client.post("/api/chat", json={"message": message})
+
+    assert client.get("/api/state").get_json()["automations"] == []
+
+
 def test_level_automation_uses_device_step_and_does_not_repeat(client):
     rule = client.post(
         "/api/automations",

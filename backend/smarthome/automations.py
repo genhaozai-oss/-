@@ -1,3 +1,5 @@
+import re
+
 from . import database
 from .devices import set_device_capability, set_device_state
 
@@ -8,6 +10,50 @@ SENSOR_LABELS = {
 }
 OPERATOR_LABELS = {"above": "高于", "below": "低于"}
 ACTION_LABELS = {"on": "打开", "off": "关闭", "set_level": "调节"}
+CONDITION_PATTERN = re.compile(
+    r"(温度|湿度)\s*(超过|高于|大于|低于|少于|小于)\s*"
+    r"(-?\d+(?:\.\d+)?)\s*(?:℃|度|%|％)?"
+)
+LEVEL_ACTION_PATTERN = re.compile(
+    r"^(?:把)?(.+?)(风速|亮度)\s*"
+    r"(?:调到|调成|设为|设置为)\s*"
+    r"(\d+(?:\.\d+)?)\s*(?:%|％)?$"
+)
+STATE_ACTION_WORDS = {
+    "打开": "on",
+    "开启": "on",
+    "启动": "on",
+    "关闭": "off",
+    "关掉": "off",
+    "停止": "off",
+}
+SENSOR_NAMES = {"温度": "temperature", "湿度": "humidity"}
+OPERATOR_NAMES = {
+    "超过": "above",
+    "高于": "above",
+    "大于": "above",
+    "低于": "below",
+    "少于": "below",
+    "小于": "below",
+}
+CAPABILITY_NAMES = {"风速": "speed", "亮度": "brightness"}
+AUTOMATION_NEGATION_PATTERN = re.compile(
+    r"不|没|未|无|非|别|莫|勿|禁止|取消|删除|移除|撤销|停用|避免|拒绝"
+)
+AUTOMATION_CREATION_CUES = (
+    "以后",
+    "每当",
+    "一旦",
+    "如果",
+    "当",
+    "自动",
+    "就",
+)
+AUTOMATION_QUESTION_PATTERN = re.compile(
+    r"[?？]|(?:吗|么|嘛|呢)\s*[。！？!?]*$|"
+    r"是否|是不是|可不可以|可以吗|能不能|有没有|"
+    r"好不好|行不行|对不对|怎么样|如何"
+)
 
 
 def describe_rule(rule):
@@ -102,6 +148,91 @@ def create_rule(arguments, selected_device_id=None):
     result = serialize_rule(rule)
     database.log_event("automation", f"创建规则：{result['description']}", result)
     return result
+
+
+def _strip_action_prefix(text):
+    value = str(text or "").strip(" ，。！？,.!?")
+    prefix = re.compile(
+        r"^(?:(?:的时候|的话|时|后|就|则|自动|请帮我|帮我|请)"
+        r"[\s，,。]*)+"
+    )
+    return prefix.sub("", value).strip(" ，。！？,.!?")
+
+
+def _state_action(text):
+    for word, state in STATE_ACTION_WORDS.items():
+        if text.startswith(word):
+            target = text.removeprefix(word).strip(" ，。！？,.!?")
+            if target:
+                return target, state
+        if text.endswith(word):
+            target = text.removesuffix(word).removeprefix("把").strip(
+                " ，。！？,.!?"
+            )
+            if target:
+                return target, state
+    return None
+
+
+def handle_automation_message(message, selected_device_id=None):
+    raw_message = str(message or "").strip()
+    normalized = raw_message.strip(" ，。！？,.!?")
+    if AUTOMATION_NEGATION_PATTERN.search(normalized):
+        return None
+    if AUTOMATION_QUESTION_PATTERN.search(raw_message):
+        return None
+    condition = CONDITION_PATTERN.search(normalized)
+    if not condition:
+        return None
+    if not any(cue in normalized for cue in AUTOMATION_CREATION_CUES):
+        return None
+    sensor_label, operator_label, threshold = condition.groups()
+    action_text = _strip_action_prefix(normalized[condition.end():])
+    if not action_text:
+        return None
+
+    level_match = LEVEL_ACTION_PATTERN.match(action_text)
+    if level_match:
+        device_name, capability_label, value = level_match.groups()
+        arguments = {
+            "sensor": SENSOR_NAMES[sensor_label],
+            "operator": OPERATOR_NAMES[operator_label],
+            "threshold": threshold,
+            "device_name": device_name.strip(),
+            "action": "set_level",
+            "capability": CAPABILITY_NAMES[capability_label],
+            "value": value,
+        }
+    else:
+        state_action = _state_action(action_text)
+        if not state_action:
+            return None
+        device_name, state = state_action
+        arguments = {
+            "sensor": SENSOR_NAMES[sensor_label],
+            "operator": OPERATOR_NAMES[operator_label],
+            "threshold": threshold,
+            "device_name": device_name,
+            "action": state,
+        }
+
+    try:
+        rule = create_rule(arguments, selected_device_id)
+    except ValueError as exc:
+        return {
+            "intent": "create_automation",
+            "reply": f"没有保存这条自动化：{exc}",
+            "actions": [],
+        }
+    return {
+        "intent": "create_automation",
+        "reply": (
+            f"已在本地保存自动化：{rule['description']}。"
+            "云端 AI 暂时不可用时也会继续执行。"
+        ),
+        "actions": [],
+        "automation": rule,
+    }
 
 
 def _condition_matches(rule, environment):

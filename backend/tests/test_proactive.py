@@ -67,6 +67,36 @@ def test_claim_requires_delivery_acknowledgement(app, client):
     assert acknowledged["delivered_at"] is not None
 
 
+def test_notification_claim_prioritizes_urgent_kinds(app, client):
+    with app.app_context():
+        for kind in ("sensor", "auto_flow", "weather_warning", "alarm"):
+            database.create_notification(
+                kind,
+                kind,
+                f"{kind} message",
+                f"priority:{kind}",
+            )
+
+    claimed_kinds = []
+    for _index in range(4):
+        notification = client.post(
+            "/api/notifications/claim"
+        ).get_json()["notification"]
+        claimed_kinds.append(notification["kind"])
+        response = client.post(
+            f"/api/notifications/{notification['id']}/ack",
+            json={"claim_token": notification["claim_token"]},
+        )
+        assert response.status_code == 200
+
+    assert claimed_kinds == [
+        "alarm",
+        "weather_warning",
+        "auto_flow",
+        "sensor",
+    ]
+
+
 def test_unacknowledged_claim_can_be_retried_after_lease(app):
     create_due_alarm(app)
     app.extensions["proactive_monitor"].run_once(force=True)

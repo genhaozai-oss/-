@@ -602,6 +602,7 @@ function renderAlarms(alarms) {
 
 function notificationIcon(kind) {
   if (kind === "alarm") return "铃";
+  if (kind === "auto_flow") return "智";
   if (kind === "sensor") return "感";
   if (kind === "weather_warning") return "警";
   return "天";
